@@ -1,13 +1,23 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::APIResult;
 
-pub async fn list(state: State<Arc<crate::State>>) -> APIResult<()> {
-    todo!()
+#[derive(Serialize)]
+pub struct ImportJob {}
+
+pub async fn list_import(state: State<Arc<crate::State>>) -> APIResult<Vec<ImportJob>> {
+    Ok(Json(vec![]))
 }
-pub async fn get(state: State<Arc<crate::State>>, Path(job_id): Path<Uuid>) -> APIResult<()> {
+pub async fn get_import(
+    state: State<Arc<crate::State>>,
+    Path(job_id): Path<Uuid>,
+) -> APIResult<()> {
     todo!()
 }

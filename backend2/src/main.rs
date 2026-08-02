@@ -1,4 +1,10 @@
-use std::sync::Arc;
+#![feature(macro_metavar_expr_concat)]
+
+use std::{
+    env,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use anyhow::Context;
 use axum::{
@@ -8,22 +14,39 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde_json::json;
+use sqlx::{ConnectOptions, Sqlite};
+
+use crate::util::RouterExt;
 
 mod annotations;
 mod die;
 mod jobs;
 mod ml;
 mod tiles;
+mod util;
 
 pub type APIResult<T> = Result<Json<T>, APIError>;
+pub type DB = sqlx::Pool<Sqlite>;
 
-pub struct State {}
+pub struct State {
+    db: DB,
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     simple_logger::init_with_env().context("failed to init logger")?;
 
-    log::info!("Starting rust backend on port: 11111");
+    let cfg = Config::from_env();
+
+    let db = sqlx::sqlite::SqlitePool::connect(":memory:")
+        .await
+        .context("failed to coonect with db")?;
+
+    sqlx::migrate!()
+        .run(&db)
+        .await
+        .context("failed to run migrations on db")?;
+    log::info!("Starting rust backend on port: 3001");
 
     let router = Router::new()
         .route(
@@ -82,17 +105,85 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/dies/{die_id}/tiles/{z}/{x}/{y}", get(tiles::get))
         .route("/api/dies/{die_id}/ml-export", post(ml::export))
-        .with_state(Arc::new(State {}));
+        .route("/api/import-jobs", get(jobs::list_import))
+        .route("/api/import-jobs/{job_id}", get(jobs::get_import))
+        .die_param("cells", die::cell_get, die::cell_delete)
+        .die_param("cell-types", die::cell_type_get, die::cell_type_delete)
+        .die_param("nets", die::net_get, die::net_delete)
+        .die_param("grids", die::grid_get, die::grid_delete)
+        .die_param("pins", die::pin_get, die::pin_delete)
+        .die_param("annotations", die::annotation_get, die::annotation_delete)
+        .die_param("rois", die::roi_get, die::roi_delete)
+        .die_param("ignores", die::ignore_get, die::ignore_delete)
+        .die_param("guides", die::guide_get, die::guide_delete)
+        .with_state(Arc::new(State { db }));
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:11111")
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001")
         .await
-        .context("failed to bind to port: 11111")?;
+        .context("failed to bind to port: 3001")?;
 
     axum::serve(listener, router.into_make_service())
         .await
         .context("fail axum::serve")?;
 
     Ok(())
+}
+
+struct Config {
+    port: u16,
+    db: PathBuf,
+    tile_size: u32,
+    limit_input_pixels: Option<u32>,
+    tile_concurency: u32,
+
+    ml_sidecar_url: String,
+    ml_predict_pad: u32,
+}
+
+impl Config {
+    fn from_env() -> Self {
+        Self {
+            port: env::var("PORT")
+                .ok()
+                .as_deref()
+                .unwrap_or("3001")
+                .parse()
+                .unwrap(),
+            db: env::var("CHIPTOOL_DB")
+                .ok()
+                .as_deref()
+                .unwrap_or("./db.sqlite")
+                .parse()
+                .unwrap(),
+            tile_size: env::var("CHIPTOOL_TILE_SIZE")
+                .ok()
+                .as_deref()
+                .unwrap_or("512")
+                .parse()
+                .unwrap(),
+            limit_input_pixels: env::var("CHIPTOOL_LIMIT_INPUT_PIXELS")
+                .ok()
+                .map(|v| v.parse().unwrap()),
+            tile_concurency: env::var("CHIPTOOL_TILE_CONCURRENCY")
+                .ok()
+                .as_deref()
+                .unwrap_or("4")
+                .parse()
+                .unwrap(),
+
+            ml_sidecar_url: env::var("CHIPTOOL_ML_SIDECAR_URL")
+                .ok()
+                .as_deref()
+                .unwrap_or("http://127.0.0.1:8001")
+                .to_string(),
+            ml_predict_pad: env::var("CHIPTOOL_ML_PREDICT_PAD")
+                .ok()
+                .as_deref()
+                .unwrap_or("128")
+                .parse()
+                .unwrap(),
+        }
+    }
 }
 
 #[derive(Debug)]

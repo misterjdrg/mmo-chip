@@ -1,9 +1,16 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::{
+    Json,
+    extract::{Path, State},
+};
+use serde::Serialize;
 use uuid::Uuid;
 
 use crate::APIResult;
+
+#[derive(Serialize)]
+pub struct InferenceJob {}
 
 pub async fn status(state: State<Arc<crate::State>>) -> APIResult<()> {
     todo!()
@@ -14,8 +21,8 @@ pub async fn models(state: State<Arc<crate::State>>) -> APIResult<()> {
 pub async fn set_model(state: State<Arc<crate::State>>) -> APIResult<()> {
     todo!()
 }
-pub async fn inference_jobs(state: State<Arc<crate::State>>) -> APIResult<()> {
-    todo!()
+pub async fn inference_jobs(state: State<Arc<crate::State>>) -> APIResult<Vec<InferenceJob>> {
+    Ok(Json(vec![]))
 }
 pub async fn job_by_die(
     state: State<Arc<crate::State>>,

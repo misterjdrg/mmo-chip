@@ -10,6 +10,6 @@ log = { version = "0.4.33", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 simple_logger = "5.2.0"
-sqlx = { version = "0.9.0", features = ["sqlite"] }
+sqlx = { version = "0.9.0", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1.53.1", features = ["full"] }
 uuid = { version = "1.24.0", features = ["serde", "v4"] }
