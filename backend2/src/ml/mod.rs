@@ -13,6 +13,8 @@ use crate::{APIResult, ml::domain::Status};
 pub mod backend;
 pub mod domain;
 
+pub use backend::Backend;
+
 #[derive(Serialize)]
 pub struct InferenceJob {}
 

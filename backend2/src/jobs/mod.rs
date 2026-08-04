@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{io, ops::Deref, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -6,11 +6,20 @@ use axum::{
     extract::{Multipart, Path, State},
 };
 use chrono::Local;
+use futures::StreamExt;
+use image::{DynamicImage, ImageReader, codecs::jpeg::JpegEncoder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{APIResult, DB, die::db as die_db, tiles::DieInfo, util};
+use crate::{
+    APIResult, Config, DB,
+    die::{self, db as die_db},
+    file,
+    jobs::db::JobKind,
+    tiles::{self, TileClip, TileLocation, TileTree},
+    util::{self, Log},
+};
 
 pub mod db;
 
@@ -61,10 +70,6 @@ pub struct ImportResponse {
     finished_at: String,
     progress: ImportJobProgress,
 }
-#[derive(Serialize, Deserialize)]
-pub enum JobKind {
-    ImportDie { die_id: Uuid },
-}
 
 pub async fn die_import(
     state: State<Arc<crate::State>>,
@@ -80,18 +85,24 @@ pub async fn die_import(
         .filter(|c| c.is_ascii_alphanumeric() || ['-', '_', '.'].contains(c))
         .flat_map(|c| c.to_lowercase())
         .collect::<String>();
-    let img = image::load_from_memory(&bytes).context("failed to parse image")?;
-    let file_id = die_db::create_file(&state.db, &filename, "image/*", &bytes)
+    let buf = bytes.deref();
+    let reader = ImageReader::new(io::Cursor::new(buf));
+    let dims = reader
+        .with_guessed_format()
+        .context("failed to guess format")?
+        .into_dimensions()
+        .context("failed to decode image dimensions")?;
+    let file_id = file::db::create(&state.db, &filename, "image/*", &bytes)
         .await
         .context("failed to upload image")?;
 
-    let die_info = DieInfo::new(img.width(), img.height(), state.config.tile_size);
+    let die_info = TileTree::new(dims.0, dims.1, state.config.tile_size);
     let levels = die_info.build_levels();
     let die_id = die_db::create_die(&state.db, &filename, file_id, &die_info, &levels)
         .await
         .context("failed to create die")?;
 
-    let job_id = db::create_job(&state.db, &JobKind::ImportDie { die_id })
+    let job_id = db::create_import_die_job(&state.db, die_id)
         .await
         .context("failed to create import die job")?;
 
@@ -137,10 +148,118 @@ pub async fn get_import(
     todo!()
 }
 
-pub async fn worker(db: DB, mut recv: mpsc::Receiver<Uuid>) {
-    // kernel: sharp.kernel.lanczos3
-    // jpeg({ quality: 90 })
+pub async fn worker(config: Config, db: DB, mut recv: mpsc::Receiver<Uuid>) {
     while let Some(job_id) = recv.recv().await {
-        eprintln!("worker: peeking job: {job_id}");
+        match process(&config, &db, job_id)
+            .await
+            .with_context(|| format!("failed to process job: {job_id}"))
+            .log_error()
+        {
+            Ok(_) => {
+                let _ = db::set_status(&db, job_id, db::JobStatus::Done)
+                    .await
+                    .log_error();
+            }
+            Err(_) => {
+                let _ = db::set_status(&db, job_id, db::JobStatus::Failed)
+                    .await
+                    .log_error();
+            }
+        }
     }
+}
+pub async fn process(config: &Config, db: &DB, job_id: Uuid) -> anyhow::Result<()> {
+    eprintln!("worker: peeking job: {job_id}");
+
+    let job = db::get(db, job_id)
+        .await
+        .context("failed to get job")?
+        .context("no job")?;
+
+    match job.kind.0 {
+        JobKind::ImportDie { die_id } => {
+            process_die_tiling(config, db, job_id, die_id).await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn process_die_tiling(
+    config: &Config,
+    db: &DB,
+    job_id: Uuid,
+    die_id: Uuid,
+) -> anyhow::Result<()> {
+    db::set_started_at(db, job_id)
+        .await
+        .context("failed mark job as started")?;
+    let die = die::db::get(db, die_id)
+        .await
+        .context("failed to get die")?
+        .context("no die")?;
+
+    let tree = TileTree::new(die.width, die.height, die.tile_size);
+
+    let file = file::db::get(db, die.original_file_id)
+        .await
+        .context("failed to get file")?
+        .context("no file")?;
+    let shot = Arc::new(image::load_from_memory(&file.bytes).context("failed to load image")?);
+    drop(file);
+
+    futures::stream::iter(tree.all_tiles())
+        .for_each_concurrent(config.tile_concurency as usize, async |(loc, clip)| {
+            tile_die(db, die.id, shot.clone(), loc, clip).await.log();
+        })
+        .await;
+
+    // should be no active links after foreach
+    drop(Arc::try_unwrap(shot).unwrap());
+
+    db::set_finished_at(db, job_id)
+        .await
+        .context("failed mark job as finished")?;
+    Ok(())
+}
+async fn tile_die(
+    db: &DB,
+    die_id: Uuid,
+    shot: Arc<DynamicImage>,
+    loc: TileLocation,
+    clip: TileClip,
+) -> anyhow::Result<()> {
+    eprintln!("processing tile: {loc:?}");
+
+    let buf = tokio::task::spawn_blocking(move || {
+        let cropped = shot.crop_imm(clip.src.x, clip.src.y, clip.src.w, clip.src.h);
+        let resized = cropped.resize_exact(
+            clip.dst_w,
+            clip.dst_h,
+            image::imageops::FilterType::Lanczos3,
+        );
+        drop(cropped);
+        let mut buf = vec![];
+        let encoder = JpegEncoder::new_with_quality(&mut buf, 90);
+        resized.write_with_encoder(encoder);
+        drop(clip);
+        buf
+    })
+    .await
+    .context("failed to join")?;
+
+    let file_id = file::db::create(
+        db,
+        &format!("tile_{}_{}_{}.jpeg", loc.z, loc.x, loc.y),
+        "image/jpeg",
+        &buf,
+    )
+    .await
+    .context("failed to create tile file")?;
+    drop(buf);
+
+    tiles::db::assign(db, die_id, &loc, file_id)
+        .await
+        .context("failed to set tile")?;
+
+    Ok(())
 }

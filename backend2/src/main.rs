@@ -6,19 +6,21 @@ use std::{env, path::PathBuf, sync::Arc};
 use anyhow::Context;
 use axum::{
     Json, Router,
+    extract::DefaultBodyLimit,
     http::StatusCode,
     response::IntoResponse,
     routing::{delete, get, post},
 };
 use serde_json::json;
-use sqlx::{ConnectOptions, Sqlite};
+use sqlx::{ConnectOptions, Sqlite, sqlite::SqliteConnectOptions};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
-use crate::{ml::backend::Backend, util::RouterExt};
+use crate::util::RouterExt;
 
 mod annotations;
 mod die;
+mod file;
 mod jobs;
 mod ml;
 mod tiles;
@@ -31,28 +33,35 @@ pub struct State {
     config: Config,
     db: DB,
     job_sender: mpsc::Sender<Uuid>,
-    ml_backend: Backend,
+    ml_backend: ml::Backend,
 }
 
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main]
 async fn main() -> anyhow::Result<()> {
     simple_logger::init_with_env().context("failed to init logger")?;
 
     let config = Config::from_env();
 
-    let db = sqlx::sqlite::SqlitePool::connect(":memory:")
-        .await
-        .context("failed to coonect with db")?;
+    let db = sqlx::sqlite::SqlitePool::connect_with(
+        SqliteConnectOptions::new()
+            .create_if_missing(true)
+            .filename("./db.sqlite"),
+    )
+    .await
+    .context("failed to connect with db")?;
+    //let db = sqlx::sqlite::SqlitePool::connect(":memory:")
+    //    .await
+    //    .context("failed to connect with db")?;
 
     sqlx::migrate!()
         .run(&db)
         .await
         .context("failed to run migrations on db")?;
 
-    let ml_backend = Backend::new_remote(&config).context("failed to create ml backend")?;
+    let ml_backend = ml::Backend::new_remote(&config).context("failed to create ml backend")?;
     let (job_sender, job_recv) = mpsc::channel(16);
 
-    tokio::spawn(jobs::worker(db.clone(), job_recv));
+    tokio::spawn(jobs::worker(config.clone(), db.clone(), job_recv));
 
     log::info!("Starting rust backend on port: 3001");
 
@@ -129,7 +138,8 @@ async fn main() -> anyhow::Result<()> {
             db,
             job_sender,
             ml_backend,
-        }));
+        }))
+        .layer(DefaultBodyLimit::disable());
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001")
         .await
@@ -140,15 +150,16 @@ async fn main() -> anyhow::Result<()> {
         .context("fail axum::serve")
 }
 
-struct Config {
-    port: u16,
-    db: PathBuf,
-    tile_size: u32,
-    limit_input_pixels: Option<u32>,
-    tile_concurency: u32,
+#[derive(Debug, Clone)]
+pub struct Config {
+    pub port: u16,
+    pub db: PathBuf,
+    pub tile_size: u32,
+    pub limit_input_pixels: Option<u32>,
+    pub tile_concurency: u32,
 
-    ml_sidecar_url: String,
-    ml_predict_pad: u32,
+    pub ml_sidecar_url: String,
+    pub ml_predict_pad: u32,
 }
 
 impl Config {

@@ -88,3 +88,23 @@ pub async fn get_single_file(mut multipart: Multipart) -> anyhow::Result<Option<
     }
     Ok(file)
 }
+
+pub trait Log {
+    fn log(self) -> Self;
+    fn log_error(self) -> Self;
+}
+
+impl<T> Log for anyhow::Result<T> {
+    fn log(self) -> Self {
+        if let Err(ref e) = self {
+            log::info!("error: {e:?}");
+        }
+        self
+    }
+    fn log_error(self) -> Self {
+        if let Err(ref e) = self {
+            log::error!("error: {e:?}");
+        }
+        self
+    }
+}

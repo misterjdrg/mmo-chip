@@ -16,14 +16,14 @@ pub struct TileLocation {
     pub x: u32,
     pub y: u32,
 }
-pub struct DieInfo {
+pub struct TileTree {
     pub width: u32,
     pub height: u32,
     pub tile_size: u32,
     pub max_zoom_level: u32,
 }
 
-impl DieInfo {
+impl TileTree {
     pub fn new(width: u32, height: u32, tile_size: u32) -> Self {
         let max_dimension = width.max(height);
         let max_zoom_level = (max_dimension as f64 / tile_size as f64)
@@ -42,7 +42,6 @@ impl DieInfo {
         let src_x = loc.x * self.tile_size;
         let src_y = loc.y * self.tile_size;
         let dst_w = self.tile_size.min(level.width - src_x);
-        eprintln!("h: {} y: {src_y}", level.height);
         let dst_h = self.tile_size.min(level.height - src_y);
 
         let src_x = src_x * level.scale;
@@ -65,10 +64,10 @@ impl DieInfo {
         let mut infos = vec![];
         for z in 0..(self.max_zoom_level + 1) {
             let scale = 1 << (self.max_zoom_level - z);
-            let width = 1.max(self.width / scale);
-            let height = 1.max(self.height / scale);
-            let columns = 1.max(width / self.tile_size);
-            let rows = 1.max(height / self.tile_size);
+            let width = 1.max((self.width + scale - 1) / scale);
+            let height = 1.max((self.height + scale - 1) / scale);
+            let columns = 1.max((width + self.tile_size - 1) / self.tile_size);
+            let rows = 1.max((height + self.tile_size - 1) / self.tile_size);
 
             infos.push(LevelInfo {
                 z,
@@ -82,7 +81,7 @@ impl DieInfo {
         infos
     }
 
-    pub fn tiles(&self) -> impl Iterator<Item = (TileLocation, TileClip)> {
+    pub fn all_tiles(&self) -> impl Iterator<Item = (TileLocation, TileClip)> {
         let mut z = 0;
         let mut x = 0;
         let mut y = 0;
@@ -91,7 +90,7 @@ impl DieInfo {
         iter::from_fn(move || {
             loop {
                 let level = levels.get(z as usize)?;
-                if x < level.columns {
+                if x < level.columns && y < level.rows {
                     let loc = TileLocation { z, x, y };
                     let clip = self.get_tile_clip(&level, &loc);
                     x += 1;
@@ -129,13 +128,7 @@ mod tests {
     #[test]
     fn pyramid() {
         assert_eq!(
-            DieInfo {
-                width: 4096,
-                height: 2048,
-                tile_size: 512,
-                max_zoom_level: 3
-            }
-            .build_levels(),
+            TileTree::new(4096, 2048, 512).build_levels(),
             vec![
                 LevelInfo {
                     z: 0,
@@ -174,17 +167,17 @@ mod tests {
     }
 
     #[test]
-    fn tile_count() {
-        let die = DieInfo::new(4096, 2048, 512);
-        let count: u32 = die.build_levels().iter().map(|l| l.rows * l.columns).sum();
+    fn tile_count_unaligned_dims() {
+        let tree = TileTree::new(4624, 2604, 512);
+        let count: u32 = tree.build_levels().iter().map(|l| l.rows * l.columns).sum();
 
-        assert_eq!(
-            count as usize,
-            die.tiles()
-                .inspect(|d| {
-                    dbg!(d);
-                })
-                .count()
-        );
+        assert_eq!(84, count);
+    }
+    #[test]
+    fn tile_count() {
+        let tree = TileTree::new(4624, 2604, 512);
+        let count: u32 = tree.build_levels().iter().map(|l| l.rows * l.columns).sum();
+
+        assert_eq!(count as usize, tree.all_tiles().count());
     }
 }

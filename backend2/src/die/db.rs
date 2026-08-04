@@ -1,47 +1,36 @@
 use anyhow::Context;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{prelude::FromRow, types::Json};
 use uuid::Uuid;
 
 use crate::{
     DB,
-    tiles::{DieInfo, LevelInfo},
-    util::DateTime,
+    tiles::{LevelInfo, TileTree},
 };
 
-#[derive(Serialize, Deserialize)]
+#[derive(FromRow, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Die {
-    id: Uuid,
-    name: String,
-    original_file_id: Uuid,
-    width: u32,
-    height: u32,
-    max_zoom_level: u32,
-    zoom_levels: Vec<ZoomLevel>,
+    pub id: Uuid,
+    pub name: String,
+    pub original_file_id: Uuid,
+    pub original_file_name: String,
+    pub width: u32,
+    pub height: u32,
+    pub tile_size: u32,
+    pub max_zoom_level: u32,
+    pub zoom_levels: Json<Vec<ZoomLevel>>,
 
-    annotation_version: u32,
-    annotation_revision: u32,
+    pub annotation_version: String,
+    pub annotation_revision: String,
 
-    created_at: DateTime,
-    updated_at: DateTime,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
 }
-#[derive(Serialize, Deserialize, FromRow)]
-#[serde(rename = "camelCase")]
-pub struct DieSummary {
-    id: Uuid,
-    name: String,
-    original_file_name: String,
-    width: u32,
-    height: u32,
-    tile_size: u32,
-    max_zoom_level: u32,
-    created_at: String,
-    updated_at: String,
-    //tile_progress: Option<DieTileProgress>,
-}
+
 #[derive(Serialize, Deserialize)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct DieTileProgress {
     total_tiles: u32,
     completed_tiles: u32,
@@ -61,19 +50,39 @@ pub enum DieParamKind {
     Guide,
 }
 #[derive(Serialize, Deserialize)]
-pub struct ZoomLevel {}
+#[serde(rename_all = "camelCase")]
+pub struct ZoomLevel {
+    z: u32,
+    width: u32,
+    height: u32,
+    columns: u32,
+    rows: u32,
+    scale: u32,
+}
 
-pub async fn list_die_summaries(db: &DB) -> anyhow::Result<Vec<DieSummary>> {
-    sqlx::query_as("SELECT d.id, d.name, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
+pub async fn all_dies(db: &DB) -> anyhow::Result<Vec<Die>> {
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
         .fetch_all(db)
         .await
-        .context("failed to list die summary")
+        .context("failed to list all dies")
 }
 
-pub fn get_by_id(db: &DB, die_id: Uuid) -> anyhow::Result<Option<Die>> {
-    todo!()
+pub async fn get(db: &DB, die_id: Uuid) -> anyhow::Result<Option<Die>> {
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id WHERE d.id = $1")
+        .bind(die_id)
+        .fetch_optional(db)
+        .await
+        .context("failed to get die by id")
 }
-pub fn get_params<'de, P: params::IsParamKind>(
+pub async fn delete(db: &DB, die_id: Uuid) -> anyhow::Result<bool> {
+    sqlx::query("DELETE FROM dies WHERE id = $1")
+        .bind(die_id)
+        .execute(db)
+        .await
+        .context("failed to delete die")
+        .map(|r| r.rows_affected() > 0)
+}
+pub async fn get_params<'de, P: params::IsParamKind>(
     db: &DB,
     die_id: Uuid,
 ) -> anyhow::Result<Vec<WithId<P>>> {
@@ -84,7 +93,7 @@ pub async fn create_die(
     db: &DB,
     name: &str,
     file_id: Uuid,
-    die_info: &DieInfo,
+    die_info: &TileTree,
     zoom_levels: &[LevelInfo],
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
@@ -104,18 +113,6 @@ pub async fn create_die(
         .execute(db)
         .await
         .context("failed to insert die")
-        .map(|_| id)
-}
-pub async fn create_file(db: &DB, name: &str, mime: &str, bytes: &[u8]) -> anyhow::Result<Uuid> {
-    let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO files(id, name, mime, bytes) VALUES ($1, $2, $3, $4)")
-        .bind(id)
-        .bind(name)
-        .bind(mime)
-        .bind(bytes)
-        .execute(db)
-        .await
-        .context("failed to insert file")
         .map(|_| id)
 }
 
