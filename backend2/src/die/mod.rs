@@ -1,27 +1,27 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use axum::{
     Json,
-    extract::{Path, State},
+    body::Bytes,
+    extract::{Multipart, Path, State},
 };
-use serde::Serialize;
+use image::DynamicImage;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::APIResult;
+use crate::{APIResult, jobs::JobKind, tiles::DieInfo};
+use db::DieSummary;
 
-#[derive(Serialize)]
-pub struct Die {}
+pub mod db;
 
-pub async fn list(state: State<Arc<crate::State>>) -> APIResult<Vec<Die>> {
-    Ok(Json(vec![]))
+pub async fn list(state: State<Arc<crate::State>>) -> APIResult<Vec<DieSummary>> {
+    Ok(Json(db::list_die_summaries(&state.db).await?))
 }
 pub async fn get(state: State<Arc<crate::State>>, Path(die_id): Path<Uuid>) -> APIResult<()> {
     todo!()
 }
 pub async fn delete(state: State<Arc<crate::State>>, Path(die_id): Path<Uuid>) -> APIResult<()> {
-    todo!()
-}
-pub async fn import(state: State<Arc<crate::State>>) -> APIResult<()> {
     todo!()
 }
 

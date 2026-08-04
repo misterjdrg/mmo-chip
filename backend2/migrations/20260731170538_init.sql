@@ -2,7 +2,7 @@ CREATE TABLE files (
     id TEXT,
     name TEXT,
     mime TEXT,
-    content BLOB,
+    bytes BLOB,
     created_at TEXT,
 
     PRIMARY KEY(id)
@@ -13,8 +13,12 @@ CREATE TABLE dies (
     original_file_id TEXT,
     width INTEGER,
     height INTEGER,
+    tile_size INTEGER,
     max_zoom_level INTEGER,
-    zoom_levels INTEGER,
+    zoom_levels TEXT,
+
+    annotation_version TEXT,
+    annotation_revision TEXT,
 
     created_at TEXT,
     updated_at TEXT,
@@ -45,4 +49,13 @@ CREATE TABLE jobs (
     finished_at TEXT,
 
     PRIMARY KEY(id)
+);
+
+CREATE TABLE die_params (
+    id TEXT,
+    die_id TEXT,
+    kind TEXT,
+    content TEXT,
+
+    PRIMARY KEY(id, die_id)
 );

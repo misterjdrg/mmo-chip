@@ -1,4 +1,10 @@
-use axum::{Router, handler::Handler};
+use core::str;
+use std::ops::Deref;
+
+use anyhow::Context;
+use axum::{Router, body::Bytes, extract::Multipart, handler::Handler};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 pub trait RouterExt {
     type S: Clone + Send + Sync + 'static;
@@ -26,4 +32,59 @@ where
             axum::routing::get(list_fn).delete(delete_fn),
         )
     }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DateTime {}
+
+impl From<chrono::DateTime<Utc>> for DateTime {
+    fn from(value: chrono::DateTime<Utc>) -> Self {
+        todo!()
+    }
+}
+impl Deref for DateTime {
+    type Target = chrono::DateTime<Utc>;
+    fn deref(&self) -> &Self::Target {
+        todo!()
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AABB {
+    pub x: u32,
+    pub y: u32,
+    pub w: u32,
+    pub h: u32,
+}
+impl AABB {
+    fn as_array(&self) -> [u32; 4] {
+        [self.x, self.y, self.w, self.h]
+    }
+}
+
+pub async fn get_single_file(mut multipart: Multipart) -> anyhow::Result<Option<(String, Bytes)>> {
+    let mut file = None;
+    while let Some(part) = multipart
+        .next_field()
+        .await
+        .context("failed to read multipart")?
+    {
+        let name = part.name().context("can't read part name")?;
+
+        match (name, file) {
+            ("file", None) => {
+                file = Some((
+                    part.file_name().context("no filename")?.to_string(),
+                    part.bytes().await.context("failed to read part bytes")?,
+                ));
+            }
+            ("file", Some(_)) => {
+                anyhow::bail!("only one file")
+            }
+            _ => {
+                anyhow::bail!("expected `file` got {name}")
+            }
+        }
+    }
+    Ok(file)
 }

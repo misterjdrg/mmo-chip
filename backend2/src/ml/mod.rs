@@ -5,15 +5,43 @@ use axum::{
     extract::{Path, State},
 };
 use serde::Serialize;
+use serde_json::json;
 use uuid::Uuid;
 
-use crate::APIResult;
+use crate::{APIResult, ml::domain::Status};
+
+pub mod backend;
+pub mod domain;
 
 #[derive(Serialize)]
 pub struct InferenceJob {}
 
-pub async fn status(state: State<Arc<crate::State>>) -> APIResult<()> {
-    todo!()
+pub async fn status(state: State<Arc<crate::State>>) -> APIResult<serde_json::Value> {
+    let status = state.ml_backend.status()?;
+    Ok(Json(match status {
+        Status::Offline => json!({
+            "reachable": false
+        }),
+        Status::Online {
+            status,
+            device,
+            checkpoint,
+            checkpoint_hash,
+            encoder,
+            model_loaded,
+            training_active,
+        } => json!({
+            "reachable": true,
+            "status": status,
+            "device": device,
+            "checkpoint": checkpoint,
+            "checkpointHash": checkpoint_hash,
+            "encoder": encoder,
+            "modelLoader": model_loaded,
+            "trainingActive": training_active,
+
+        }),
+    }))
 }
 pub async fn models(state: State<Arc<crate::State>>) -> APIResult<()> {
     todo!()

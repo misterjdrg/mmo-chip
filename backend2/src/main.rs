@@ -1,10 +1,7 @@
 #![feature(macro_metavar_expr_concat)]
+#![allow(unused)]
 
-use std::{
-    env,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::{env, path::PathBuf, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -15,8 +12,10 @@ use axum::{
 };
 use serde_json::json;
 use sqlx::{ConnectOptions, Sqlite};
+use tokio::sync::mpsc;
+use uuid::Uuid;
 
-use crate::util::RouterExt;
+use crate::{ml::backend::Backend, util::RouterExt};
 
 mod annotations;
 mod die;
@@ -29,14 +28,17 @@ pub type APIResult<T> = Result<Json<T>, APIError>;
 pub type DB = sqlx::Pool<Sqlite>;
 
 pub struct State {
+    config: Config,
     db: DB,
+    job_sender: mpsc::Sender<Uuid>,
+    ml_backend: Backend,
 }
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     simple_logger::init_with_env().context("failed to init logger")?;
 
-    let cfg = Config::from_env();
+    let config = Config::from_env();
 
     let db = sqlx::sqlite::SqlitePool::connect(":memory:")
         .await
@@ -46,6 +48,12 @@ async fn main() -> anyhow::Result<()> {
         .run(&db)
         .await
         .context("failed to run migrations on db")?;
+
+    let ml_backend = Backend::new_remote(&config).context("failed to create ml backend")?;
+    let (job_sender, job_recv) = mpsc::channel(16);
+
+    tokio::spawn(jobs::worker(db.clone(), job_recv));
+
     log::info!("Starting rust backend on port: 3001");
 
     let router = Router::new()
@@ -67,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/api/dies", get(die::list))
         .route("/api/dies/{die_id}", get(die::get).delete(die::delete))
-        .route("/api/dies/import", post(die::import))
+        .route("/api/dies/import", post(jobs::die_import))
         .route("/api/health", get(async || Json(json!({"ok": true}))))
         .route("/api/ml/status", get(ml::status))
         .route("/api/ml/models", get(ml::models))
@@ -116,7 +124,12 @@ async fn main() -> anyhow::Result<()> {
         .die_param("rois", die::roi_get, die::roi_delete)
         .die_param("ignores", die::ignore_get, die::ignore_delete)
         .die_param("guides", die::guide_get, die::guide_delete)
-        .with_state(Arc::new(State { db }));
+        .with_state(Arc::new(State {
+            config,
+            db,
+            job_sender,
+            ml_backend,
+        }));
 
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3001")
         .await
@@ -124,9 +137,7 @@ async fn main() -> anyhow::Result<()> {
 
     axum::serve(listener, router.into_make_service())
         .await
-        .context("fail axum::serve")?;
-
-    Ok(())
+        .context("fail axum::serve")
 }
 
 struct Config {
