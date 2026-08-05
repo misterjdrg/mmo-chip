@@ -1,4 +1,4 @@
-use std::{io, ops::Deref, sync::Arc};
+use std::{io, ops::Deref, sync::Arc, time::Instant};
 
 use anyhow::Context;
 use axum::{
@@ -7,13 +7,13 @@ use axum::{
 };
 use chrono::Local;
 use futures::StreamExt;
-use image::{DynamicImage, ImageReader, codecs::jpeg::JpegEncoder};
+use image::{DynamicImage, ImageFormat, ImageReader, codecs::jpeg::JpegEncoder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    APIResult, Config, DB,
+    APIError, APIResult, Config, DB,
     die::{self, db as die_db},
     file,
     jobs::db::JobKind,
@@ -87,18 +87,31 @@ pub async fn die_import(
         .collect::<String>();
     let buf = bytes.deref();
     let reader = ImageReader::new(io::Cursor::new(buf));
-    let dims = reader
+    let reader = reader
         .with_guessed_format()
-        .context("failed to guess format")?
+        .context("failed to guess format")?;
+    let image_format = reader.format().context("no image format")?;
+    let dims = reader
         .into_dimensions()
         .context("failed to decode image dimensions")?;
-    let file_id = file::db::create(&state.db, &filename, "image/*", &bytes)
+
+    let mime = match image_format {
+        ImageFormat::Jpeg => "image/jpeg",
+        ImageFormat::Png => "image/png",
+        fmt => {
+            return Err(APIError::General(anyhow::anyhow!(
+                "unsupporerted image format: {fmt:?}, only supported png, jpeg"
+            )));
+        }
+    };
+
+    let file_id = file::db::create(&state.db, &filename, mime, &bytes)
         .await
         .context("failed to upload image")?;
 
-    let die_info = TileTree::new(dims.0, dims.1, state.config.tile_size);
-    let levels = die_info.build_levels();
-    let die_id = die_db::create_die(&state.db, &filename, file_id, &die_info, &levels)
+    let tree = TileTree::new(dims.0, dims.1, state.config.tile_size);
+    let levels = tree.build_levels();
+    let die_id = die::db::create(&state.db, &filename, file_id, &tree, &levels)
         .await
         .context("failed to create die")?;
 
@@ -150,6 +163,9 @@ pub async fn get_import(
 
 pub async fn worker(config: Config, db: DB, mut recv: mpsc::Receiver<Uuid>) {
     while let Some(job_id) = recv.recv().await {
+        log::info!("worker: peeking job: {job_id}");
+        let start = Instant::now();
+
         match process(&config, &db, job_id)
             .await
             .with_context(|| format!("failed to process job: {job_id}"))
@@ -159,18 +175,21 @@ pub async fn worker(config: Config, db: DB, mut recv: mpsc::Receiver<Uuid>) {
                 let _ = db::set_status(&db, job_id, db::JobStatus::Done)
                     .await
                     .log_error();
+                log::info!("worker: job done {job_id} in {:?}", Instant::now() - start);
             }
             Err(_) => {
                 let _ = db::set_status(&db, job_id, db::JobStatus::Failed)
                     .await
                     .log_error();
+                log::info!(
+                    "worker: job failed {job_id} in {:?}",
+                    Instant::now() - start
+                );
             }
         }
     }
 }
 pub async fn process(config: &Config, db: &DB, job_id: Uuid) -> anyhow::Result<()> {
-    eprintln!("worker: peeking job: {job_id}");
-
     let job = db::get(db, job_id)
         .await
         .context("failed to get job")?
@@ -204,8 +223,12 @@ pub async fn process_die_tiling(
         .await
         .context("failed to get file")?
         .context("no file")?;
-    let shot = Arc::new(image::load_from_memory(&file.bytes).context("failed to load image")?);
-    drop(file);
+    let shot = Arc::new(
+        tokio::task::spawn_blocking(move || image::load_from_memory(&file.bytes))
+            .await
+            .context("failed at die decode task")?
+            .context("failed to load image")?,
+    );
 
     futures::stream::iter(tree.all_tiles())
         .for_each_concurrent(config.tile_concurency as usize, async |(loc, clip)| {
@@ -228,8 +251,6 @@ async fn tile_die(
     loc: TileLocation,
     clip: TileClip,
 ) -> anyhow::Result<()> {
-    eprintln!("processing tile: {loc:?}");
-
     let buf = tokio::task::spawn_blocking(move || {
         let cropped = shot.crop_imm(clip.src.x, clip.src.y, clip.src.w, clip.src.h);
         let resized = cropped.resize_exact(

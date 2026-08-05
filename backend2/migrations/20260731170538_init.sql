@@ -17,8 +17,9 @@ CREATE TABLE dies (
     max_zoom_level INTEGER,
     zoom_levels TEXT,
 
-    annotation_version TEXT,
-    annotation_revision TEXT,
+    annotation_version INTEGER,
+    annotation_revision INTEGER,
+    ml_config TEXT,
 
     created_at TEXT,
     updated_at TEXT,

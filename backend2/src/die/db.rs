@@ -20,13 +20,27 @@ pub struct Die {
     pub height: u32,
     pub tile_size: u32,
     pub max_zoom_level: u32,
+    #[serde(rename = "levels")]
     pub zoom_levels: Json<Vec<ZoomLevel>>,
 
-    pub annotation_version: String,
-    pub annotation_revision: String,
+    pub annotation_version: u32,
+
+    /// Monotonically incremented every time the annotations are written.
+    /// Clients use it to spot stale caches when a WS notification arrives.
+    pub annotation_revision: u32,
+    pub ml_config: Json<Option<MLConfig>>,
 
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(FromRow, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MLConfig {
+    /// Via radius in source px → Gaussian sigma = radius * 0.5. Chip-global
+    pub point_via_size: u32,
+    /// Default trace stroke width in source px. Chip-global
+    pub trace_width: u32,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,14 +75,14 @@ pub struct ZoomLevel {
 }
 
 pub async fn all_dies(db: &DB) -> anyhow::Result<Vec<Die>> {
-    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
         .fetch_all(db)
         .await
         .context("failed to list all dies")
 }
 
 pub async fn get(db: &DB, die_id: Uuid) -> anyhow::Result<Option<Die>> {
-    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id WHERE d.id = $1")
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id WHERE d.id = $1")
         .bind(die_id)
         .fetch_optional(db)
         .await
@@ -89,25 +103,26 @@ pub async fn get_params<'de, P: params::IsParamKind>(
     todo!()
 }
 
-pub async fn create_die(
+pub async fn create(
     db: &DB,
     name: &str,
     file_id: Uuid,
-    die_info: &TileTree,
+    tree: &TileTree,
     zoom_levels: &[LevelInfo],
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO dies(id, name, original_file_id, width, height, tile_size, max_zoom_level, zoom_levels, annotation_version, annotation_revision, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)")
+    sqlx::query("INSERT INTO dies(id, name, original_file_id, width, height, tile_size, max_zoom_level, zoom_levels, annotation_version, annotation_revision, ml_config, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
         .bind(id)
         .bind(name)
         .bind(file_id)
-        .bind(die_info.width)
-        .bind(die_info.height)
-        .bind(die_info.tile_size)
-        .bind(die_info.max_zoom_level)
+        .bind(tree.width)
+        .bind(tree.height)
+        .bind(tree.tile_size)
+        .bind(tree.max_zoom_level)
         .bind(Json(zoom_levels))
-        .bind("v2")
-        .bind("1")
+        .bind(2)
+        .bind(0)
+        .bind(Json(None::<MLConfig>))
         .bind(Local::now())
         .bind(Local::now())
         .execute(db)

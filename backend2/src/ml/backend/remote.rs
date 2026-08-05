@@ -41,7 +41,7 @@ impl RemoteBackend {
     }
 
     pub fn inference_job(&self, die_id: Uuid) -> anyhow::Result<Option<InferenceJob>> {
-        todo!()
+        Ok(None)
     }
     pub fn inference_job_start(&self, die_id: Uuid) -> anyhow::Result<Option<bool>> {
         todo!()

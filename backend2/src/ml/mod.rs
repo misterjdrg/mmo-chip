@@ -58,7 +58,7 @@ pub async fn job_by_die(
     state: State<Arc<crate::State>>,
     Path(die_id): Path<Uuid>,
 ) -> APIResult<()> {
-    todo!()
+    Ok(Json(()))
 }
 
 pub async fn start_job_for_die(

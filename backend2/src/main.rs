@@ -1,7 +1,7 @@
 #![feature(macro_metavar_expr_concat)]
 #![allow(unused)]
 
-use std::{env, path::PathBuf, sync::Arc};
+use std::{env, path::PathBuf, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use axum::{
@@ -13,16 +13,17 @@ use axum::{
 };
 use serde_json::json;
 use sqlx::{ConnectOptions, Sqlite, sqlite::SqliteConnectOptions};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
-use crate::util::RouterExt;
+use crate::{realtime::RealtimeEvent, util::RouterExt};
 
 mod annotations;
 mod die;
 mod file;
 mod jobs;
 mod ml;
+mod realtime;
 mod tiles;
 mod util;
 
@@ -34,6 +35,8 @@ pub struct State {
     db: DB,
     job_sender: mpsc::Sender<Uuid>,
     ml_backend: ml::Backend,
+
+    rt_sender: broadcast::Sender<RealtimeEvent>,
 }
 
 #[tokio::main]
@@ -45,7 +48,8 @@ async fn main() -> anyhow::Result<()> {
     let db = sqlx::sqlite::SqlitePool::connect_with(
         SqliteConnectOptions::new()
             .create_if_missing(true)
-            .filename("./db.sqlite"),
+            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(5))
+            .filename(&config.db),
     )
     .await
     .context("failed to connect with db")?;
@@ -62,6 +66,8 @@ async fn main() -> anyhow::Result<()> {
     let (job_sender, job_recv) = mpsc::channel(16);
 
     tokio::spawn(jobs::worker(config.clone(), db.clone(), job_recv));
+
+    let (rt_sender, _) = broadcast::channel(16);
 
     log::info!("Starting rust backend on port: 3001");
 
@@ -133,11 +139,14 @@ async fn main() -> anyhow::Result<()> {
         .die_param("rois", die::roi_get, die::roi_delete)
         .die_param("ignores", die::ignore_get, die::ignore_delete)
         .die_param("guides", die::guide_get, die::guide_delete)
+        .route("/api/ws", get(realtime::websocket))
         .with_state(Arc::new(State {
             config,
             db,
             job_sender,
             ml_backend,
+
+            rt_sender,
         }))
         .layer(DefaultBodyLimit::disable());
 
