@@ -34,21 +34,6 @@ where
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct DateTime {}
-
-impl From<chrono::DateTime<Utc>> for DateTime {
-    fn from(value: chrono::DateTime<Utc>) -> Self {
-        todo!()
-    }
-}
-impl Deref for DateTime {
-    type Target = chrono::DateTime<Utc>;
-    fn deref(&self) -> &Self::Target {
-        todo!()
-    }
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AABB {
     pub x: u32,

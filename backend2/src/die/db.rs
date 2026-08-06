@@ -1,7 +1,7 @@
 use anyhow::Context;
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
-use sqlx::{prelude::FromRow, types::Json};
+use sqlx::{Sqlite, prelude::FromRow, types::Json};
 use uuid::Uuid;
 
 use crate::{
@@ -58,10 +58,25 @@ pub enum DieParamKind {
     Cell,
     Grid,
     Pin,
-    Annotation,
+    HumanAnnotation,
     ROI,
-    Ignore,
+    IgnoreRect,
     Guide,
+}
+impl AsRef<str> for DieParamKind {
+    fn as_ref(&self) -> &str {
+        match self {
+            Self::Net => "net",
+            Self::CellType => "cell_type",
+            Self::Cell => "cell",
+            Self::Grid => "grid",
+            Self::Pin => "pin",
+            Self::HumanAnnotation => "annotation",
+            Self::ROI => "roi",
+            Self::IgnoreRect => "ignore",
+            Self::Guide => "guide",
+        }
+    }
 }
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,11 +111,12 @@ pub async fn delete(db: &DB, die_id: Uuid) -> anyhow::Result<bool> {
         .context("failed to delete die")
         .map(|r| r.rows_affected() > 0)
 }
-pub async fn get_params<'de, P: params::IsParamKind>(
-    db: &DB,
-    die_id: Uuid,
-) -> anyhow::Result<Vec<WithId<P>>> {
-    todo!()
+pub async fn increment_annotation_revision(db: &DB, die_id: Uuid) -> anyhow::Result<u32> {
+    sqlx::query_scalar("UPDATE dies SET annotation_revision = annotation_revision + 1 WHERE id = $1 RETURNING annotation_revision")
+        .bind(die_id)
+        .fetch_one(db)
+        .await
+        .context("failed to increment die annotation revision")
 }
 
 pub async fn create(
@@ -129,66 +145,4 @@ pub async fn create(
         .await
         .context("failed to insert die")
         .map(|_| id)
-}
-
-#[derive(Serialize, Deserialize)]
-pub struct WithId<T> {
-    id: Uuid,
-    t: T,
-}
-
-pub mod params {
-    use serde::{Deserialize, Serialize};
-
-    use crate::die::db::DieParamKind;
-
-    pub trait IsParamKind: Serialize + Deserialize<'static> {
-        const KIND: DieParamKind;
-    }
-
-    #[derive(Serialize, Deserialize)]
-    pub struct Net {}
-    impl IsParamKind for Net {
-        const KIND: DieParamKind = DieParamKind::Net;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Cell {}
-    impl IsParamKind for Cell {
-        const KIND: DieParamKind = DieParamKind::Cell;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct CellType {}
-    impl IsParamKind for CellType {
-        const KIND: DieParamKind = DieParamKind::CellType;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Grid {}
-    impl IsParamKind for Grid {
-        const KIND: DieParamKind = DieParamKind::Grid;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Pin {}
-    impl IsParamKind for Pin {
-        const KIND: DieParamKind = DieParamKind::Pin;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Annotation {}
-    impl IsParamKind for Annotation {
-        const KIND: DieParamKind = DieParamKind::Annotation;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct ROI {}
-    impl IsParamKind for ROI {
-        const KIND: DieParamKind = DieParamKind::ROI;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Ignore {}
-    impl IsParamKind for Ignore {
-        const KIND: DieParamKind = DieParamKind::Ignore;
-    }
-    #[derive(Serialize, Deserialize)]
-    pub struct Guide {}
-    impl IsParamKind for Guide {
-        const KIND: DieParamKind = DieParamKind::Guide;
-    }
 }

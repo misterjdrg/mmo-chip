@@ -23,6 +23,7 @@ mod die;
 mod file;
 mod jobs;
 mod ml;
+mod params;
 mod realtime;
 mod tiles;
 mod util;
@@ -39,7 +40,7 @@ pub struct State {
     rt_sender: broadcast::Sender<RealtimeEvent>,
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     simple_logger::init_with_env().context("failed to init logger")?;
 
@@ -69,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
 
     let (rt_sender, _) = broadcast::channel(16);
 
-    log::info!("Starting rust backend on port: 3001");
+    log::info!("Starting rust backend on port: {}", config.port);
 
     let router = Router::new()
         .route(
@@ -130,18 +131,26 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/dies/{die_id}/ml-export", post(ml::export))
         .route("/api/import-jobs", get(jobs::list_import))
         .route("/api/import-jobs/{job_id}", get(jobs::get_import))
-        .die_param("cells", die::cell_get, die::cell_delete)
-        .die_param("cell-types", die::cell_type_get, die::cell_type_delete)
-        .die_param("nets", die::net_get, die::net_delete)
-        .die_param("grids", die::grid_get, die::grid_delete)
-        .die_param("pins", die::pin_get, die::pin_delete)
-        .die_param("annotations", die::annotation_get, die::annotation_delete)
-        .die_param("rois", die::roi_get, die::roi_delete)
-        .die_param("ignores", die::ignore_get, die::ignore_delete)
-        .die_param("guides", die::guide_get, die::guide_delete)
+        .die_param("cells", params::cell_get, params::cell_delete)
+        .die_param(
+            "cell-types",
+            params::cell_type_get,
+            params::cell_type_delete,
+        )
+        .die_param("nets", params::net_get, params::net_delete)
+        .die_param("grids", params::grid_get, params::grid_delete)
+        .die_param("pins", params::pin_get, params::pin_delete)
+        .die_param(
+            "annotations",
+            params::annotation_get,
+            params::annotation_delete,
+        )
+        .die_param("rois", params::roi_get, params::roi_delete)
+        .die_param("ignores", params::ignore_get, params::ignore_delete)
+        .die_param("guides", params::guide_get, params::guide_delete)
         .route("/api/ws", get(realtime::websocket))
         .with_state(Arc::new(State {
-            config,
+            config: config.clone(),
             db,
             job_sender,
             ml_backend,
@@ -150,9 +159,9 @@ async fn main() -> anyhow::Result<()> {
         }))
         .layer(DefaultBodyLimit::disable());
 
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3001")
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))
         .await
-        .context("failed to bind to port: 3001")?;
+        .with_context(|| format!("failed to bind to port: {}", config.port))?;
 
     axum::serve(listener, router.into_make_service())
         .await
