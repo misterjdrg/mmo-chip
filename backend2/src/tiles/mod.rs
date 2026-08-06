@@ -1,4 +1,4 @@
-use std::{iter, sync::Arc};
+use std::{iter, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use axum::{
@@ -35,16 +35,28 @@ pub async fn get(
 ) -> Response {
     let loc = TileLocation { z, x, y };
 
-    match db::get_file(&state.db, die_id, &loc)
-        .await
-        .context("failed to get file for tile")
-        .log_error()
-    {
-        Ok(Some(f)) => (([(header::CONTENT_TYPE, f.mime)]), f.bytes).into_response(),
-        Ok(None) => (StatusCode::NOT_FOUND).into_response(),
-        Err(e) => {
-            log::error!("{e:?}");
-            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+    let mut file = None;
+
+    // Waiting 10 seconds for tile, if not present
+    for i in 0..40 {
+        let Ok(r) = db::get_file(&state.db, die_id, &loc)
+            .await
+            .context("failed to get file for tile")
+            .log_error()
+        else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+
+        if let Some(f) = r {
+            file = Some(f);
+            break;
         }
+
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+
+    match file {
+        Some(f) => (([(header::CONTENT_TYPE, f.mime)]), f.bytes).into_response(),
+        None => (StatusCode::NOT_FOUND).into_response(),
     }
 }

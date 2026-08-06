@@ -31,12 +31,13 @@ impl_is_param_kind!(Pin);
 impl_is_param_kind!(ROI);
 impl_is_param_kind!(IgnoreRect);
 impl_is_param_kind!(Guide);
+impl_is_param_kind!(HumanAnnotation);
 
 #[derive(Serialize, Deserialize)]
 pub struct NetNode {
     pub id: Uuid,
-    pub x: u32,
-    pub y: u32,
+    pub x: f32,
+    pub y: f32,
 }
 #[derive(Serialize, Deserialize)]
 pub enum WireLayer {
@@ -49,6 +50,8 @@ pub struct NetEdge {
     pub id: Uuid,
     pub from: Uuid,
     pub to: Uuid,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub layer: Option<WireLayer>,
 }
 
@@ -104,13 +107,16 @@ pub struct LayerShape {
     pub custom_name: Option<String>,
 }
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
 pub enum Shape {
+    #[serde(rename = "rect")]
     Rect {
         x: u32,
         y: u32,
         width: u32,
         height: u32,
     },
+    #[serde(rename = "line")]
     Line {
         x1: u32,
         x2: u32,
@@ -118,19 +124,12 @@ pub enum Shape {
         y2: u32,
         width: u32,
     },
-    Point {
-        x: u32,
-        y: u32,
-        width: u32,
-    },
-    Circle {
-        x: u32,
-        y: u32,
-        radius: u32,
-    },
-    Poligon {
-        points: Vec<(u32, u32)>,
-    },
+    #[serde(rename = "point")]
+    Point { x: u32, y: u32, width: u32 },
+    #[serde(rename = "circle")]
+    Circle { x: u32, y: u32, radius: u32 },
+    #[serde(rename = "polygon")]
+    Polygon { points: Vec<(u32, u32)> },
 }
 #[derive(Serialize, Deserialize)]
 pub enum DiffusionType {
@@ -178,19 +177,47 @@ pub struct Pin {
 
 #[derive(Serialize, Deserialize)]
 pub enum HumanAnnotationClass {
+    #[serde(rename = "point_via")]
     PointVia,
+    #[serde(rename = "irregular_via")]
     IrregularVia,
+    #[serde(rename = "trace")]
     Trace,
 }
 
 #[derive(Serialize, Deserialize)]
-pub enum HumanAnnotationSource {}
+pub enum HumanAnnotationSource {
+    #[serde(rename = "human")]
+    Human,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum HumanAnnotationShape {
+    #[serde(rename = "point")]
+    Point { x: u32, y: u32 },
+
+    #[serde(rename = "rectangle")]
+    Rectangle {
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    },
+    #[serde(rename = "polygon")]
+    Polygon { points: Vec<Point> },
+}
+#[derive(Serialize, Deserialize)]
+pub struct Point {
+    x: u32,
+    y: u32,
+}
 
 #[derive(Serialize, Deserialize)]
 pub struct HumanAnnotation {
     pub id: Uuid,
     pub class: HumanAnnotationClass,
-    pub geometry: Shape,
+    pub geometry: HumanAnnotationShape,
     pub source: Option<HumanAnnotationSource>,
 }
 #[derive(Serialize, Deserialize)]
@@ -206,7 +233,9 @@ pub struct IgnoreRect {
 }
 #[derive(Serialize, Deserialize)]
 pub enum GuideKindLineAxis {
+    #[serde(rename = "x")]
     X,
+    #[serde(rename = "y")]
     Y,
 }
 #[derive(Serialize, Deserialize)]

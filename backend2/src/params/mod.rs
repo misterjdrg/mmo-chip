@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use anyhow::Context;
 use axum::{
@@ -10,44 +10,513 @@ use image::DynamicImage;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{APIResult, die::db::Die, tiles::TileTree};
+use crate::{
+    APIResult,
+    die::db::Die,
+    params::domain::{
+        CellType, Grid, Guide, GuideKind, GuideKindLineAxis, HumanAnnotation, HumanAnnotationClass,
+        HumanAnnotationShape, HumanAnnotationSource, IgnoreRect, IsParamKind, Net, Pin, ROI, Rect,
+        Shape,
+    },
+    tiles::TileTree,
+};
+use crate::{die, params::domain::Cell};
+use crate::{
+    params::domain::{NetEdge, NetNode},
+    realtime::RealtimeEvent,
+};
 
 pub mod db;
 pub mod domain;
 
-macro_rules! die_param_get {
-    ($kind: ident) => {
-        pub async fn ${concat($kind, _get)}(
+pub async fn list(
+    state: State<Arc<crate::State>>,
+    Path(die_id): Path<Uuid>,
+) -> APIResult<Annotations> {
+    let die = die::db::get(&state.db, die_id)
+        .await
+        .context("failed to get die")?
+        .context("no die")?;
+
+    let nets = db::list::<Net>(&state.db, die_id)
+        .await
+        .context("failed to get nets")?;
+    let nets = nets
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<NetRequest>>();
+
+    let cell_types = db::list::<CellType>(&state.db, die_id)
+        .await
+        .context("failed to get cell_types")?;
+    let cell_types = cell_types
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<CellTypeRequest>>();
+
+    let guides = db::list::<Guide>(&state.db, die_id)
+        .await
+        .context("failed to get guides")?;
+    let guides = guides
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<GuideRequest>>();
+
+    let pins = db::list::<Pin>(&state.db, die_id)
+        .await
+        .context("failed to get pins")?;
+    let pins = pins
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<PinRequest>>();
+
+    let annotations = db::list::<HumanAnnotation>(&state.db, die_id)
+        .await
+        .context("failed to get annotations")?;
+    let annotations = annotations
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<HumanAnnotationRequest>>();
+
+    let rois = db::list::<ROI>(&state.db, die_id)
+        .await
+        .context("failed to get rois")?;
+    let rois = rois
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<ROIRequest>>();
+
+    let ignores = db::list::<IgnoreRect>(&state.db, die_id)
+        .await
+        .context("failed to get ignores")?;
+    let ignores = ignores
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<IgnoreRectRequest>>();
+
+    Ok(Json(Annotations {
+        version: 2,
+        revision: die.annotation_revision,
+        annotations,
+        cell_types,
+        cells: vec![],
+        grids: vec![],
+        guides,
+        ignores,
+        nets,
+        pins,
+        rois,
+    }))
+}
+
+pub async fn insert(state: State<Arc<crate::State>>, Path(die_id): Path<Uuid>) -> APIResult<()> {
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision: 0,
+    });
+    todo!()
+}
+
+pub async fn insert_node(
+    state: State<Arc<crate::State>>,
+    Path((die_id, net_id, node_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+pub async fn delete_node(
+    state: State<Arc<crate::State>>,
+    Path((die_id, net_id, node_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+pub async fn insert_edge(
+    state: State<Arc<crate::State>>,
+    Path((die_id, net_id, edge_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+pub async fn delete_edge(
+    state: State<Arc<crate::State>>,
+    Path((die_id, net_id, edge_id)): Path<(Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+pub async fn insert_shape(
+    state: State<Arc<crate::State>>,
+    Path((die_id, celltype_id, layer_id, shape_id)): Path<(Uuid, Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+pub async fn delete_shape(
+    state: State<Arc<crate::State>>,
+    Path((die_id, celltype_id, layer_id, shape_id)): Path<(Uuid, Uuid, Uuid, Uuid)>,
+) -> APIResult<()> {
+    todo!()
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum ParamChangeResponse {
+    Ok {
+        ok: bool,
+        #[serde(rename = "rev")]
+        new_revision: u32,
+    },
+    Err {
+        error: String,
+    },
+}
+
+macro_rules! die_param_put {
+    ($kind: ident, $db_typ: ident) => {
+        pub async fn ${concat($kind, _put)}(
             state: State<Arc<crate::State>>,
             Path((die_id, id)): Path<(Uuid, Uuid)>,
-        ) -> APIResult<()> {
-            todo!()
+            Json(param): Json<${concat($db_typ, Request)}>,
+        ) -> APIResult<ParamChangeResponse> {
+            let param = Into::<$db_typ>::into((id, param));
+
+            let res = db::insert_or_update::<$db_typ>(&state.db, die_id, &param)
+                .await
+                .context("failed to insert or update param")?;
+
+            if res {
+                let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
+                    .await
+                    .context("failed to increment revision")?;
+
+                state.rt_sender.send(RealtimeEvent::AnnotationChange {
+                    die_id,
+                    new_revision,
+                });
+
+                Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
+            } else {
+                Ok(Json(ParamChangeResponse::Err { error: format!("{} with id {} on die {} can't insert or update", <$db_typ as IsParamKind>::KIND.as_ref(), id, die_id) }))
+            }
         }
     };
 }
 macro_rules! die_param_delete {
-    ($kind: ident) => {
+    ($kind: ident, $db_typ: ident) => {
         pub async fn ${concat($kind, _delete)}(
             state: State<Arc<crate::State>>,
             Path((die_id, id)): Path<(Uuid, Uuid)>,
-        ) -> APIResult<()> {
-            todo!()
+        ) -> APIResult<ParamChangeResponse> {
+            let res = db::delete_one::<$db_typ>(&state.db, die_id, id)
+                .await
+                .context("failed to delete param")?;
+
+            if res {
+                let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
+                    .await
+                    .context("failed to increment revision")?;
+
+                state.rt_sender.send(RealtimeEvent::AnnotationChange {
+                    die_id,
+                    new_revision,
+                });
+
+                Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
+            } else {
+                Ok(Json(ParamChangeResponse::Err { error: format!("{} with id {} on die {} not found", <$db_typ as IsParamKind>::KIND.as_ref(), id, die_id) }))
+            }
         }
     };
 }
 macro_rules! die_param {
-    ($kind: ident) => {
-        die_param_get!($kind);
-        die_param_delete!($kind);
+    ($kind: ident, $db_typ: ident) => {
+        die_param_put!($kind, $db_typ);
+        die_param_delete!($kind, $db_typ);
     };
 }
 
-die_param!(cell);
-die_param!(cell_type);
-die_param!(net);
-die_param!(grid);
-die_param!(pin);
-die_param!(annotation);
-die_param!(roi);
-die_param!(ignore);
-die_param!(guide);
+die_param!(cell, Cell);
+die_param!(cell_type, CellType);
+die_param!(net, Net);
+die_param!(grid, Grid);
+die_param!(pin, Pin);
+die_param!(annotation, HumanAnnotation);
+die_param!(roi, ROI);
+die_param!(ignore_rect, IgnoreRect);
+die_param!(guide, Guide);
+
+#[derive(Serialize, Deserialize)]
+pub struct CellRequest {}
+impl From<(Uuid, CellRequest)> for Cell {
+    fn from(value: (Uuid, CellRequest)) -> Self {
+        todo!()
+    }
+}
+impl From<Cell> for CellRequest {
+    fn from(value: Cell) -> Self {
+        todo!()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellTypeRequest {
+    id: Uuid,
+    name: String,
+    crop_rect: Rect,
+}
+impl From<CellType> for CellTypeRequest {
+    fn from(value: CellType) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            crop_rect: value.crop_rect,
+        }
+    }
+}
+impl From<(Uuid, CellTypeRequest)> for CellType {
+    fn from(value: (Uuid, CellTypeRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            name: value.1.name,
+            crop_rect: value.1.crop_rect,
+            layers: HashMap::new(),
+            matched: false,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct NetRequest {
+    id: Uuid,
+    name: String,
+    nodes: Vec<NetNode>,
+    edges: Vec<NetEdge>,
+}
+impl From<Net> for NetRequest {
+    fn from(value: Net) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            nodes: value.nodes,
+            edges: value.edges,
+        }
+    }
+}
+impl From<(Uuid, NetRequest)> for Net {
+    fn from(value: (Uuid, NetRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            name: value.1.name,
+            nodes: value.1.nodes,
+            edges: value.1.edges,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct GridRequest {}
+impl From<(Uuid, GridRequest)> for Grid {
+    fn from(value: (Uuid, GridRequest)) -> Self {
+        todo!()
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct PinRequest {
+    id: Uuid,
+    name: String,
+    x: u32,
+    y: u32,
+    pin: u32,
+}
+impl From<Pin> for PinRequest {
+    fn from(value: Pin) -> Self {
+        Self {
+            id: value.id,
+            name: value.name,
+            pin: value.pin,
+            x: value.x,
+            y: value.y,
+        }
+    }
+}
+impl From<(Uuid, PinRequest)> for Pin {
+    fn from(value: (Uuid, PinRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            name: value.1.name,
+            pin: value.1.pin,
+            x: value.1.x,
+            y: value.1.y,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct HumanAnnotationRequest {
+    id: Uuid,
+    class: HumanAnnotationClass,
+    source: Option<HumanAnnotationSource>,
+    geometry: HumanAnnotationShape,
+}
+impl From<HumanAnnotation> for HumanAnnotationRequest {
+    fn from(value: HumanAnnotation) -> Self {
+        Self {
+            id: value.id,
+            class: value.class,
+            source: value.source,
+            geometry: value.geometry,
+        }
+    }
+}
+impl From<(Uuid, HumanAnnotationRequest)> for HumanAnnotation {
+    fn from(value: (Uuid, HumanAnnotationRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            class: value.1.class,
+            source: value.1.source,
+            geometry: value.1.geometry,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct ROIRequest {
+    id: Uuid,
+    classes: Vec<HumanAnnotationClass>,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+impl From<ROI> for ROIRequest {
+    fn from(value: ROI) -> Self {
+        Self {
+            id: value.id,
+            classes: value.classes,
+            x: value.rect.x,
+            y: value.rect.y,
+            width: value.rect.width,
+            height: value.rect.height,
+        }
+    }
+}
+impl From<(Uuid, ROIRequest)> for ROI {
+    fn from(value: (Uuid, ROIRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            rect: Rect {
+                x: value.1.x,
+                y: value.1.y,
+                width: value.1.width,
+                height: value.1.height,
+            },
+            classes: value.1.classes,
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct IgnoreRectRequest {
+    id: Uuid,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+impl From<IgnoreRect> for IgnoreRectRequest {
+    fn from(value: IgnoreRect) -> Self {
+        Self {
+            id: value.id,
+            x: value.rect.x,
+            y: value.rect.y,
+            width: value.rect.width,
+            height: value.rect.height,
+        }
+    }
+}
+impl From<(Uuid, IgnoreRectRequest)> for IgnoreRect {
+    fn from(value: (Uuid, IgnoreRectRequest)) -> Self {
+        Self {
+            id: value.1.id,
+            rect: Rect {
+                x: value.1.x,
+                y: value.1.y,
+                width: value.1.width,
+                height: value.1.height,
+            },
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum GuideRequest {
+    #[serde(rename = "line")]
+    Line {
+        id: Uuid,
+        axis: GuideKindLineAxis,
+        pos: u32,
+    },
+    #[serde(rename = "segment")]
+    Segment {
+        id: Uuid,
+        x1: u32,
+        y1: u32,
+        x2: u32,
+        y2: u32,
+    },
+}
+impl From<Guide> for GuideRequest {
+    fn from(value: Guide) -> Self {
+        match value.kind {
+            GuideKind::Line { axis, pos } => Self::Line {
+                id: value.id,
+                axis,
+                pos,
+            },
+            GuideKind::Segment { x1, y1, x2, y2 } => Self::Segment {
+                id: value.id,
+                x1,
+                y1,
+                x2,
+                y2,
+            },
+        }
+    }
+}
+impl From<(Uuid, GuideRequest)> for Guide {
+    fn from(value: (Uuid, GuideRequest)) -> Self {
+        match value.1 {
+            GuideRequest::Line { id, axis, pos } => Self {
+                id,
+                kind: GuideKind::Line { axis, pos },
+            },
+            GuideRequest::Segment { id, x1, y1, x2, y2 } => Self {
+                id,
+                kind: GuideKind::Segment { x1, y1, x2, y2 },
+            },
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Annotations {
+    version: u32,
+
+    /// Monotonically incremented every time the annotations are written.
+    /// Clients use it to spot stale caches when a WS notification arrives.
+    #[serde(rename = "rev")]
+    revision: u32,
+
+    nets: Vec<NetRequest>,
+    cell_types: Vec<CellTypeRequest>,
+    cells: Vec<CellRequest>,
+    grids: Vec<GridRequest>,
+
+    pins: Vec<PinRequest>,
+    annotations: Vec<HumanAnnotationRequest>,
+    rois: Vec<ROIRequest>,
+    ignores: Vec<IgnoreRectRequest>,
+
+    /// Cell-placement guides (RE aid, not ML)
+    guides: Vec<GuideRequest>,
+}

@@ -58,5 +58,5 @@ CREATE TABLE die_params (
     kind TEXT,
     content TEXT,
 
-    PRIMARY KEY(id, die_id)
+    PRIMARY KEY(id, die_id, kind)
 );

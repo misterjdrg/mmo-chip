@@ -18,7 +18,6 @@ use uuid::Uuid;
 
 use crate::{realtime::RealtimeEvent, util::RouterExt};
 
-mod annotations;
 mod die;
 mod file;
 mod jobs;
@@ -75,19 +74,19 @@ async fn main() -> anyhow::Result<()> {
     let router = Router::new()
         .route(
             "/api/dies/{die_id}/annotations",
-            get(annotations::list).put(annotations::insert),
+            get(params::list).put(params::insert),
         )
         .route(
             "/api/dies/{die_id}/nets/{net_id}/nodes/{node_id}",
-            delete(annotations::delete_node).put(annotations::insert_node),
+            delete(params::delete_node).put(params::insert_node),
         )
         .route(
             "/api/dies/{die_id}/nets/{net_id}/edges/{edge_id}",
-            delete(annotations::delete_edge).put(annotations::insert_edge),
+            delete(params::delete_edge).put(params::insert_edge),
         )
         .route(
             "/api/dies/{die_id}/cell-types/{celltype_id}/layers/{layer_id}/shapes/{shape_id}",
-            delete(annotations::delete_shape).put(annotations::insert_shape),
+            delete(params::delete_shape).put(params::insert_shape),
         )
         .route("/api/dies", get(die::list))
         .route("/api/dies/{die_id}", get(die::get).delete(die::delete))
@@ -131,23 +130,27 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/dies/{die_id}/ml-export", post(ml::export))
         .route("/api/import-jobs", get(jobs::list_import))
         .route("/api/import-jobs/{job_id}", get(jobs::get_import))
-        .die_param("cells", params::cell_get, params::cell_delete)
+        .die_param("cells", params::cell_put, params::cell_delete)
         .die_param(
             "cell-types",
-            params::cell_type_get,
+            params::cell_type_put,
             params::cell_type_delete,
         )
-        .die_param("nets", params::net_get, params::net_delete)
-        .die_param("grids", params::grid_get, params::grid_delete)
-        .die_param("pins", params::pin_get, params::pin_delete)
+        .die_param("nets", params::net_put, params::net_delete)
+        .die_param("grids", params::grid_put, params::grid_delete)
+        .die_param("pins", params::pin_put, params::pin_delete)
         .die_param(
             "annotations",
-            params::annotation_get,
+            params::annotation_put,
             params::annotation_delete,
         )
-        .die_param("rois", params::roi_get, params::roi_delete)
-        .die_param("ignores", params::ignore_get, params::ignore_delete)
-        .die_param("guides", params::guide_get, params::guide_delete)
+        .die_param("rois", params::roi_put, params::roi_delete)
+        .die_param(
+            "ignores",
+            params::ignore_rect_put,
+            params::ignore_rect_delete,
+        )
+        .die_param("guides", params::guide_put, params::guide_delete)
         .route("/api/ws", get(realtime::websocket))
         .with_state(Arc::new(State {
             config: config.clone(),
