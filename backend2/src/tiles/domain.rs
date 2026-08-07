@@ -1,4 +1,4 @@
-use std::iter;
+use std::{iter, ops::Deref};
 
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,21 @@ pub struct TileTree {
     pub height: u32,
     pub tile_size: u32,
     pub max_zoom_level: u32,
+}
+
+pub struct Levels(Vec<LevelInfo>);
+
+impl Levels {
+    fn tile_count(&self) -> u32 {
+        self.0.iter().map(|l| l.tile_count()).sum()
+    }
+}
+
+impl Deref for Levels {
+    type Target = [LevelInfo];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl TileTree {
@@ -60,7 +75,7 @@ impl TileTree {
             dst_h,
         }
     }
-    pub fn build_levels(&self) -> Vec<LevelInfo> {
+    pub fn build_levels(&self) -> Levels {
         let mut infos = vec![];
         for z in 0..(self.max_zoom_level + 1) {
             let scale = 1 << (self.max_zoom_level - z);
@@ -78,7 +93,7 @@ impl TileTree {
                 scale,
             });
         }
-        infos
+        Levels(infos)
     }
 
     pub fn all_tiles(&self) -> impl Iterator<Item = (TileLocation, TileClip)> {
@@ -120,6 +135,12 @@ pub struct LevelInfo {
     pub scale: u32,
 }
 
+impl LevelInfo {
+    fn tile_count(&self) -> u32 {
+        self.rows * self.columns
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,7 +149,7 @@ mod tests {
     #[test]
     fn pyramid() {
         assert_eq!(
-            TileTree::new(4096, 2048, 512).build_levels(),
+            TileTree::new(4096, 2048, 512).build_levels().0,
             vec![
                 LevelInfo {
                     z: 0,
@@ -169,14 +190,12 @@ mod tests {
     #[test]
     fn tile_count_unaligned_dims() {
         let tree = TileTree::new(4624, 2604, 512);
-        let count: u32 = tree.build_levels().iter().map(|l| l.rows * l.columns).sum();
-
-        assert_eq!(84, count);
+        assert_eq!(84, tree.build_levels().tile_count());
     }
     #[test]
     fn tile_count() {
         let tree = TileTree::new(4624, 2604, 512);
-        let count: u32 = tree.build_levels().iter().map(|l| l.rows * l.columns).sum();
+        let count: u32 = tree.build_levels().tile_count();
 
         assert_eq!(count as usize, tree.all_tiles().count());
     }
