@@ -82,13 +82,13 @@ pub trait Log {
 impl<T> Log for anyhow::Result<T> {
     fn log(self) -> Self {
         if let Err(ref e) = self {
-            log::info!("error: {e:?}");
+            log::info!("error: {e} {e:?}");
         }
         self
     }
     fn log_error(self) -> Self {
         if let Err(ref e) = self {
-            log::error!("error: {e:?}");
+            log::error!("error: {e} {e:?}");
         }
         self
     }

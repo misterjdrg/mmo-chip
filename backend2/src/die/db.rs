@@ -105,12 +105,22 @@ pub async fn get(db: &DB, die_id: Uuid) -> anyhow::Result<Option<Die>> {
         .context("failed to get die by id")
 }
 pub async fn delete(db: &DB, die_id: Uuid) -> anyhow::Result<bool> {
-    sqlx::query("DELETE FROM dies WHERE id = $1")
-        .bind(die_id)
-        .execute(db)
-        .await
-        .context("failed to delete die")
-        .map(|r| r.rows_affected() > 0)
+    sqlx::query(
+        r#"
+            DELETE FROM files WHERE die_id = $1;
+            DELETE FROM tiles WHERE die_id = $1;
+            DELETE FROM clips WHERE die_id = $1;
+            DELETE FROM jobs WHERE die_id = $1;
+            DELETE FROM die_params WHERE die_id = $1;
+            DELETE FROM dies WHERE id = $1;
+            VACUUM
+        "#,
+    )
+    .bind(die_id)
+    .execute(db)
+    .await
+    .context("failed to delete die")
+    .map(|r| r.rows_affected() > 0)
 }
 pub async fn increment_annotation_revision(db: &DB, die_id: Uuid) -> anyhow::Result<u32> {
     sqlx::query_scalar("UPDATE dies SET annotation_revision = annotation_revision + 1 WHERE id = $1 RETURNING annotation_revision")
@@ -119,11 +129,20 @@ pub async fn increment_annotation_revision(db: &DB, die_id: Uuid) -> anyhow::Res
         .await
         .context("failed to increment die annotation revision")
 }
+pub async fn set_original_file(db: &DB, die_id: Uuid, file_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE dies SET original_file_id = $2 WHERE id = $1")
+        .bind(die_id)
+        .bind(file_id)
+        .execute(db)
+        .await
+        .context("failed to set original_file_id")
+        .map(|r| r.rows_affected() > 0)?
+        .ok_or_else(|| anyhow::anyhow!("no die updated"))
+}
 
 pub async fn create(
     db: &DB,
     name: &str,
-    file_id: Uuid,
     tree: &TileTree,
     zoom_levels: &[LevelInfo],
 ) -> anyhow::Result<Uuid> {
@@ -131,7 +150,7 @@ pub async fn create(
     sqlx::query("INSERT INTO dies(id, name, original_file_id, width, height, tile_size, max_zoom_level, zoom_levels, imported, annotation_version, annotation_revision, ml_config, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
         .bind(id)
         .bind(name)
-        .bind(file_id)
+        .bind(Uuid::nil())
         .bind(tree.width)
         .bind(tree.height)
         .bind(tree.tile_size)

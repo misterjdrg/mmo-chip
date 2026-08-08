@@ -26,7 +26,7 @@ pub async fn assign(
 }
 
 pub async fn get_file(db: &DB, die_id: Uuid, loc: &TileLocation) -> anyhow::Result<Option<File>> {
-    sqlx::query_as("SELECT f.id, f.name, f.mime, f.bytes FROM tiles as t JOIN files as f ON f.id = t.file_id WHERE t.die_id = $1 AND t.z = $2 AND t.x = $3 AND t.y = $4")
+    sqlx::query_as("SELECT f.id, f.die_id, f.name, f.mime, f.bytes FROM tiles as t JOIN files as f ON f.id = t.file_id WHERE t.die_id = $1 AND t.z = $2 AND t.x = $3 AND t.y = $4")
         .bind(die_id)
         .bind(loc.z)
         .bind(loc.x)

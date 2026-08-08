@@ -1,11 +1,12 @@
 CREATE TABLE files (
     id TEXT,
+    die_id TEXT,
     name TEXT,
     mime TEXT,
     bytes BLOB,
     created_at TEXT,
 
-    PRIMARY KEY(id)
+    PRIMARY KEY(id, die_id)
 );
 CREATE TABLE dies (
     id TEXT,
@@ -51,6 +52,7 @@ CREATE TABLE clips (
 
 CREATE TABLE jobs (
     id TEXT,
+    die_id TEXT,
     kind TEXT,
     status TEXT,
 

@@ -60,7 +60,8 @@ pub async fn set_started_at(db: &DB, job_id: Uuid) -> anyhow::Result<()> {
         .execute(db)
         .await
         .context("failed to set started_at")
-        .map(|_| ())
+        .map(|r| r.rows_affected() > 0)?
+        .ok_or_else(|| anyhow::anyhow!("no jobs updated"))
 }
 pub async fn set_finished_at(db: &DB, job_id: Uuid) -> anyhow::Result<()> {
     sqlx::query("UPDATE jobs SET finished_at = $2 WHERE id = $1")
@@ -69,7 +70,8 @@ pub async fn set_finished_at(db: &DB, job_id: Uuid) -> anyhow::Result<()> {
         .execute(db)
         .await
         .context("failed to set finished_at")
-        .map(|_| ())
+        .map(|r| r.rows_affected() > 0)?
+        .ok_or_else(|| anyhow::anyhow!("no jobs updated"))
 }
 pub async fn set_status(db: &DB, job_id: Uuid, status: JobStatus) -> anyhow::Result<()> {
     sqlx::query("UPDATE jobs SET status = $2 WHERE id = $1")
@@ -78,5 +80,6 @@ pub async fn set_status(db: &DB, job_id: Uuid, status: JobStatus) -> anyhow::Res
         .execute(db)
         .await
         .context("failed to set status")
-        .map(|_| ())
+        .map(|r| r.rows_affected() > 0)?
+        .ok_or_else(|| anyhow::anyhow!("no jobs updated"))
 }

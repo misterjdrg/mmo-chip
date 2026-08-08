@@ -15,7 +15,7 @@ use axum::{
 };
 use chrono::{Local, RoundingError::DurationExceedsTimestamp};
 use futures::StreamExt;
-use image::{DynamicImage, ImageFormat, ImageReader, codecs::jpeg::JpegEncoder};
+use image::{DynamicImage, ImageFormat, ImageReader, Limits, codecs::jpeg::JpegEncoder};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
@@ -118,15 +118,18 @@ pub async fn die_import(
         }
     };
 
-    let file_id = file::db::create(&state.db, &filename, mime, &bytes)
-        .await
-        .context("failed to upload image")?;
-
     let tree = TileTree::new(dims.0, dims.1, state.config.tile_size);
     let levels = tree.build_levels();
-    let die_id = die::db::create(&state.db, &filename, file_id, &tree, &levels)
+    let die_id = die::db::create(&state.db, &filename, &tree, &levels)
         .await
         .context("failed to create die")?;
+
+    let file_id = file::db::create(&state.db, die_id, &filename, mime, &bytes)
+        .await
+        .context("failed to upload image")?;
+    drop(bytes);
+
+    die::db::set_original_file(&state.db, die_id, file_id).await?;
 
     let job_id = db::create_import_die_job(&state.db, die_id)
         .await
@@ -247,12 +250,22 @@ pub async fn process_clip_cell(
         .await
         .context("failed to get file")?
         .context("no file")?;
-    let shot = Arc::new(
-        tokio::task::spawn_blocking(move || image::load_from_memory(&file.bytes))
-            .await
-            .context("failed at die decode task")?
-            .context("failed to load image")?,
-    );
+
+    let shot = tokio::task::spawn_blocking(move || -> anyhow::Result<Arc<DynamicImage>> {
+        let mut decoder = ImageReader::new(io::Cursor::new(&file.bytes));
+        decoder.no_limits();
+
+        decoder = decoder
+            .with_guessed_format()
+            .context("failed to guess image format")?;
+
+        Ok(Arc::new(
+            decoder.decode().context("failed to decode image")?,
+        ))
+    })
+    .await
+    .context("failed at die decode task")?
+    .context("failed to load image")?;
 
     db::set_finished_at(&state.db, job_id)
         .await
@@ -295,12 +308,21 @@ pub async fn process_die_tiling(
         state: DieImportState::ShotDecoding,
     });
 
-    let shot = Arc::new(
-        tokio::task::spawn_blocking(move || image::load_from_memory(&file.bytes))
-            .await
-            .context("failed at die decode task")?
-            .context("failed to load image")?,
-    );
+    let shot = tokio::task::spawn_blocking(move || -> anyhow::Result<Arc<DynamicImage>> {
+        let mut decoder = ImageReader::new(io::Cursor::new(&file.bytes));
+        decoder.no_limits();
+
+        decoder = decoder
+            .with_guessed_format()
+            .context("failed to guess image format")?;
+
+        Ok(Arc::new(
+            decoder.decode().context("failed to decode image")?,
+        ))
+    })
+    .await
+    .context("failed at die decode task")?
+    .context("failed to load image")?;
 
     state.rt_sender.send(RealtimeEvent::DieImportStateChange {
         die_id,
@@ -372,6 +394,7 @@ async fn dice_single_tile(
 
     let file_id = file::db::create(
         &state.db,
+        die_id,
         &format!("tile_{}_{}_{}.jpeg", loc.z, loc.x, loc.y),
         "image/jpeg",
         &buf,

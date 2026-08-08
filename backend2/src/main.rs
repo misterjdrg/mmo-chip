@@ -49,15 +49,17 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::from_env();
 
-    let db = sqlx::sqlite::SqlitePool::connect_with(
-        SqliteConnectOptions::new()
-            .create_if_missing(true)
-            .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(5))
-            .disable_statement_logging()
-            .filename(&config.db),
-    )
-    .await
-    .context("failed to connect with db")?;
+    let db = sqlx::sqlite::SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .create_if_missing(true)
+                .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(5))
+                .disable_statement_logging()
+                .filename(&config.db),
+        )
+        .await
+        .context("failed to connect with db")?;
     //let db = sqlx::sqlite::SqlitePool::connect(":memory:")
     //    .await
     //    .context("failed to connect with db")?;

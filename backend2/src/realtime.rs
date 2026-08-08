@@ -35,6 +35,7 @@ impl RealtimeEvent {
                 new_revision,
             } if subs.contains(die_id) => true,
             Self::MLJobUpdate { die_id, job } if subs.contains(die_id) => true,
+            Self::DieImportStateChange { die_id, state } if subs.contains(die_id) => true,
             _ => false,
         }
     }
