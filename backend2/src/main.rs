@@ -82,7 +82,7 @@ async fn main() -> anyhow::Result<()> {
         rt_sender,
     });
 
-    tokio::spawn(jobs::worker(Arc::clone(&state), job_recv));
+    tokio::spawn(jobs::worker::worker(Arc::clone(&state), job_recv));
     tokio::spawn(realtime::rt_to_console(state.clone()));
 
     log::info!("Starting rust backend on port: {}", config.port);
