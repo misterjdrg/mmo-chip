@@ -9,6 +9,7 @@ use crate::{DB, file::db::File};
 #[derive(Deserialize, Serialize, Debug)]
 pub enum JobKind {
     ImportDie { die_id: Uuid },
+    ClipCell { die_id: Uuid, owner: Uuid },
 }
 #[derive(Deserialize, Serialize, Debug)]
 pub enum JobStatus {

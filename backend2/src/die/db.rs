@@ -22,6 +22,7 @@ pub struct Die {
     pub max_zoom_level: u32,
     #[serde(rename = "levels")]
     pub zoom_levels: Json<Vec<ZoomLevel>>,
+    pub imported: bool,
 
     pub annotation_version: u32,
 
@@ -90,14 +91,14 @@ pub struct ZoomLevel {
 }
 
 pub async fn all_dies(db: &DB) -> anyhow::Result<Vec<Die>> {
-    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.imported, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id")
         .fetch_all(db)
         .await
         .context("failed to list all dies")
 }
 
 pub async fn get(db: &DB, die_id: Uuid) -> anyhow::Result<Option<Die>> {
-    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id WHERE d.id = $1")
+    sqlx::query_as("SELECT d.id, d.name, d.original_file_id, f.name as original_file_name, d.width, d.height, d.tile_size, d.max_zoom_level, d.zoom_levels, d.imported, d.annotation_version, d.annotation_revision, d.ml_config, d.created_at, d.updated_at FROM dies as d JOIN files as f ON d.original_file_id = f.id WHERE d.id = $1")
         .bind(die_id)
         .fetch_optional(db)
         .await
@@ -127,7 +128,7 @@ pub async fn create(
     zoom_levels: &[LevelInfo],
 ) -> anyhow::Result<Uuid> {
     let id = Uuid::new_v4();
-    sqlx::query("INSERT INTO dies(id, name, original_file_id, width, height, tile_size, max_zoom_level, zoom_levels, annotation_version, annotation_revision, ml_config, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)")
+    sqlx::query("INSERT INTO dies(id, name, original_file_id, width, height, tile_size, max_zoom_level, zoom_levels, imported, annotation_version, annotation_revision, ml_config, created_at, updated_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)")
         .bind(id)
         .bind(name)
         .bind(file_id)
@@ -136,6 +137,7 @@ pub async fn create(
         .bind(tree.tile_size)
         .bind(tree.max_zoom_level)
         .bind(Json(zoom_levels))
+        .bind(false)
         .bind(2)
         .bind(0)
         .bind(Json(None::<MLConfig>))
@@ -145,4 +147,14 @@ pub async fn create(
         .await
         .context("failed to insert die")
         .map(|_| id)
+}
+
+pub async fn set_imported(db: &DB, die_id: Uuid) -> anyhow::Result<()> {
+    sqlx::query("UPDATE dies SET imported = true WHERE id = $1")
+        .bind(die_id)
+        .execute(db)
+        .await
+        .context("failed to update die.imported")
+        .map(|r| r.rows_affected() > 0)?
+        .ok_or_else(|| anyhow::anyhow!("no die changed"))
 }

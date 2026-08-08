@@ -1,4 +1,5 @@
 #![feature(macro_metavar_expr_concat)]
+#![feature(bool_to_result)]
 #![allow(unused)]
 
 use std::{env, path::PathBuf, sync::Arc, time::Duration};
@@ -12,7 +13,10 @@ use axum::{
     routing::{delete, get, post},
 };
 use serde_json::json;
-use sqlx::{ConnectOptions, Sqlite, sqlite::SqliteConnectOptions};
+use sqlx::{
+    ConnectOptions, Sqlite,
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode},
+};
 use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
@@ -49,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
         SqliteConnectOptions::new()
             .create_if_missing(true)
             .log_slow_statements(log::LevelFilter::Warn, Duration::from_secs(5))
+            .disable_statement_logging()
             .filename(&config.db),
     )
     .await
@@ -65,9 +70,18 @@ async fn main() -> anyhow::Result<()> {
     let ml_backend = ml::Backend::new_remote(&config).context("failed to create ml backend")?;
     let (job_sender, job_recv) = mpsc::channel(16);
 
-    tokio::spawn(jobs::worker(config.clone(), db.clone(), job_recv));
-
     let (rt_sender, _) = broadcast::channel(16);
+    let state = Arc::new(State {
+        config: config.clone(),
+        db,
+        job_sender,
+        ml_backend,
+
+        rt_sender,
+    });
+
+    tokio::spawn(jobs::worker(Arc::clone(&state), job_recv));
+    tokio::spawn(realtime::rt_to_console(state.clone()));
 
     log::info!("Starting rust backend on port: {}", config.port);
 
@@ -152,14 +166,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .die_param("guides", params::guide_put, params::guide_delete)
         .route("/api/ws", get(realtime::websocket))
-        .with_state(Arc::new(State {
-            config: config.clone(),
-            db,
-            job_sender,
-            ml_backend,
-
-            rt_sender,
-        }))
+        .with_state(state)
         .layer(DefaultBodyLimit::disable());
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.port))

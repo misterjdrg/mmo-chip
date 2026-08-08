@@ -16,6 +16,7 @@ CREATE TABLE dies (
     tile_size INTEGER,
     max_zoom_level INTEGER,
     zoom_levels TEXT,
+    imported BOOLEAN,
 
     annotation_version INTEGER,
     annotation_revision INTEGER,
@@ -37,6 +38,15 @@ CREATE TABLE tiles (
     created_at TEXT,
 
     PRIMARY KEY(die_id, z, x, y)
+);
+CREATE TABLE clips (
+    die_id TEXT,
+    owner_id TEXT,
+    owner_kind TEXT,
+    file_id TEXT,
+
+    created_at TEXT,
+    PRIMARY KEY(die_id, owner_id)
 );
 
 CREATE TABLE jobs (

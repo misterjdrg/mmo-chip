@@ -1,15 +1,23 @@
-use std::{io, ops::Deref, sync::Arc, time::Instant};
+use std::{
+    io,
+    ops::Deref,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 use anyhow::Context;
 use axum::{
     Json,
     extract::{Multipart, Path, State},
 };
-use chrono::Local;
+use chrono::{Local, RoundingError::DurationExceedsTimestamp};
 use futures::StreamExt;
 use image::{DynamicImage, ImageFormat, ImageReader, codecs::jpeg::JpegEncoder};
 use serde::{Deserialize, Serialize};
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use uuid::Uuid;
 
 use crate::{
@@ -17,6 +25,11 @@ use crate::{
     die::{self, db as die_db},
     file,
     jobs::db::JobKind,
+    params::{
+        self,
+        domain::{Cell, CellType},
+    },
+    realtime::{self, DieImportState, RealtimeEvent},
     tiles::{self, TileClip, TileLocation, TileTree},
     util::{self, Log},
 };
@@ -161,24 +174,23 @@ pub async fn get_import(
     todo!()
 }
 
-pub async fn worker(config: Config, db: DB, mut recv: mpsc::Receiver<Uuid>) {
+pub async fn worker(state: Arc<crate::State>, mut recv: mpsc::Receiver<Uuid>) {
     while let Some(job_id) = recv.recv().await {
-        log::info!("worker: peeking job: {job_id}");
         let start = Instant::now();
 
-        match process(&config, &db, job_id)
+        match process(state.clone(), job_id)
             .await
             .with_context(|| format!("failed to process job: {job_id}"))
             .log_error()
         {
             Ok(_) => {
-                let _ = db::set_status(&db, job_id, db::JobStatus::Done)
+                let _ = db::set_status(&state.db, job_id, db::JobStatus::Done)
                     .await
                     .log_error();
                 log::info!("worker: job done {job_id} in {:?}", Instant::now() - start);
             }
             Err(_) => {
-                let _ = db::set_status(&db, job_id, db::JobStatus::Failed)
+                let _ = db::set_status(&state.db, job_id, db::JobStatus::Failed)
                     .await
                     .log_error();
                 log::info!(
@@ -189,37 +201,49 @@ pub async fn worker(config: Config, db: DB, mut recv: mpsc::Receiver<Uuid>) {
         }
     }
 }
-pub async fn process(config: &Config, db: &DB, job_id: Uuid) -> anyhow::Result<()> {
-    let job = db::get(db, job_id)
+pub async fn process(state: Arc<crate::State>, job_id: Uuid) -> anyhow::Result<()> {
+    let job = db::get(&state.db, job_id)
         .await
         .context("failed to get job")?
         .context("no job")?;
 
     match job.kind.0 {
         JobKind::ImportDie { die_id } => {
-            process_die_tiling(config, db, job_id, die_id).await?;
+            process_die_tiling(state.clone(), job_id, die_id).await?;
         }
+        JobKind::ClipCell {
+            die_id,
+            owner: owner_id,
+        } => process_clip_cell(state.clone(), job_id, die_id, owner_id).await?,
     }
     Ok(())
 }
-
-pub async fn process_die_tiling(
-    config: &Config,
-    db: &DB,
+pub async fn process_clip_cell(
+    state: Arc<crate::State>,
     job_id: Uuid,
     die_id: Uuid,
+    owner_id: Uuid,
 ) -> anyhow::Result<()> {
-    db::set_started_at(db, job_id)
+    db::set_started_at(&state.db, job_id)
         .await
         .context("failed mark job as started")?;
-    let die = die::db::get(db, die_id)
+
+    let clip = match true {
+        _ if let Some(cell) = params::db::get::<Cell>(&state.db, die_id, owner_id).await? => {
+            todo!()
+        }
+        _ if let Some(cell_type) =
+            params::db::get::<CellType>(&state.db, die_id, owner_id).await? =>
+        {
+            cell_type.crop_rect
+        }
+        _ => anyhow::bail!("Parameter not found"),
+    };
+    let die = die::db::get(&state.db, die_id)
         .await
         .context("failed to get die")?
         .context("no die")?;
-
-    let tree = TileTree::new(die.width, die.height, die.tile_size);
-
-    let file = file::db::get(db, die.original_file_id)
+    let file = file::db::get(&state.db, die.original_file_id)
         .await
         .context("failed to get file")?
         .context("no file")?;
@@ -230,26 +254,104 @@ pub async fn process_die_tiling(
             .context("failed to load image")?,
     );
 
-    futures::stream::iter(tree.all_tiles())
-        .for_each_concurrent(config.tile_concurency as usize, async |(loc, clip)| {
-            tile_die(db, die.id, shot.clone(), loc, clip).await.log();
-        })
-        .await;
+    db::set_finished_at(&state.db, job_id)
+        .await
+        .context("failed mark job as finished")?;
+
+    Ok(())
+}
+
+pub async fn process_die_tiling(
+    state: Arc<crate::State>,
+    job_id: Uuid,
+    die_id: Uuid,
+) -> anyhow::Result<()> {
+    // for frontend to subscribe to channel
+    tokio::time::sleep(Duration::from_millis(250)).await;
+
+    db::set_started_at(&state.db, job_id)
+        .await
+        .context("failed mark job as started")?;
+
+    state.rt_sender.send(RealtimeEvent::DieImportStateChange {
+        die_id,
+        state: DieImportState::Peeked,
+    });
+
+    let die = die::db::get(&state.db, die_id)
+        .await
+        .context("failed to get die")?
+        .context("no die")?;
+
+    let tree = TileTree::new(die.width, die.height, die.tile_size);
+
+    let file = file::db::get(&state.db, die.original_file_id)
+        .await
+        .context("failed to get file")?
+        .context("no file")?;
+
+    state.rt_sender.send(RealtimeEvent::DieImportStateChange {
+        die_id,
+        state: DieImportState::ShotDecoding,
+    });
+
+    let shot = Arc::new(
+        tokio::task::spawn_blocking(move || image::load_from_memory(&file.bytes))
+            .await
+            .context("failed at die decode task")?
+            .context("failed to load image")?,
+    );
+
+    state.rt_sender.send(RealtimeEvent::DieImportStateChange {
+        die_id,
+        state: DieImportState::ShotDecoded,
+    });
+
+    let counters_recv = Arc::new((AtomicU32::new(0), tree.build_levels().tile_count()));
+    let counters_send = Arc::clone(&counters_recv);
+    let rt_sender = state.rt_sender.clone();
+    let (_, _) = tokio::join!(
+        futures::stream::iter(tree.all_tiles()).for_each_concurrent(
+            state.config.tile_concurency as usize,
+            |(loc, clip)| {
+                let counters_send = Arc::clone(&counters_send);
+                let shot = Arc::clone(&shot);
+                let state = Arc::clone(&state);
+                async move {
+                    dice_single_tile(state, die_id, shot, loc, clip, counters_send)
+                        .await
+                        .log();
+                }
+            }
+        ),
+        tiling_state_broadcaster(die_id, counters_recv, rt_sender),
+    );
 
     // should be no active links after foreach
     drop(Arc::try_unwrap(shot).unwrap());
 
-    db::set_finished_at(db, job_id)
+    db::set_finished_at(&state.db, job_id)
         .await
         .context("failed mark job as finished")?;
+
+    die::db::set_imported(&state.db, die.id)
+        .await
+        .context("failed update imported flag")?;
+
+    state.rt_sender.send(RealtimeEvent::DieImportStateChange {
+        die_id,
+        state: DieImportState::Done,
+    });
     Ok(())
 }
-async fn tile_die(
-    db: &DB,
+
+async fn dice_single_tile(
+    state: Arc<crate::State>,
     die_id: Uuid,
     shot: Arc<DynamicImage>,
     loc: TileLocation,
     clip: TileClip,
+    counters: Arc<(AtomicU32, u32)>,
 ) -> anyhow::Result<()> {
     let buf = tokio::task::spawn_blocking(move || {
         let cropped = shot.crop_imm(clip.src.x, clip.src.y, clip.src.w, clip.src.h);
@@ -269,7 +371,7 @@ async fn tile_die(
     .context("failed to join")?;
 
     let file_id = file::db::create(
-        db,
+        &state.db,
         &format!("tile_{}_{}_{}.jpeg", loc.z, loc.x, loc.y),
         "image/jpeg",
         &buf,
@@ -278,9 +380,40 @@ async fn tile_die(
     .context("failed to create tile file")?;
     drop(buf);
 
-    tiles::db::assign(db, die_id, &loc, file_id)
+    tiles::db::assign(&state.db, die_id, &loc, file_id)
         .await
         .context("failed to set tile")?;
 
+    counters.0.fetch_add(1, Ordering::Relaxed);
+
     Ok(())
+}
+
+async fn tiling_state_broadcaster(
+    die_id: Uuid,
+    counters: Arc<(AtomicU32, u32)>,
+    rt: broadcast::Sender<realtime::RealtimeEvent>,
+) {
+    let mut current = counters.0.load(Ordering::Relaxed);
+
+    rt.send(RealtimeEvent::DieImportStateChange {
+        die_id,
+        state: DieImportState::TileWritten {
+            current,
+            total: counters.1,
+        },
+    });
+
+    while current < counters.1 {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        current = counters.0.load(Ordering::Relaxed);
+
+        rt.send(RealtimeEvent::DieImportStateChange {
+            die_id,
+            state: DieImportState::TileWritten {
+                current,
+                total: counters.1,
+            },
+        });
+    }
 }

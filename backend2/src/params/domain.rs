@@ -81,7 +81,7 @@ pub struct Cell {
     pub rotation: CellRotation,
     pub merged: bool,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Rect {
     pub x: u32,
     pub y: u32,

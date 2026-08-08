@@ -10,9 +10,20 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[serde(tag = "kind")]
+pub enum DieImportState {
+    Peeked,
+    ShotDecoding,
+    ShotDecoded,
+    TileWritten { current: u32, total: u32 },
+    Done,
+}
+#[derive(Debug, Clone)]
 pub enum RealtimeEvent {
     AnnotationChange { die_id: Uuid, new_revision: u32 },
+    DieImportStateChange { die_id: Uuid, state: DieImportState },
     MLJobUpdate { die_id: Uuid, job: () },
 }
 
@@ -29,7 +40,7 @@ impl RealtimeEvent {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Deserialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 pub enum WsMessageRecv {
@@ -43,7 +54,7 @@ pub enum WsMessageRecv {
         die_id: Uuid,
     },
 }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize)]
 #[serde(tag = "type")]
 #[serde(rename_all = "camelCase")]
 enum WsMessageSend {
@@ -57,6 +68,10 @@ enum WsMessageSend {
     MLJob {
         die_id: Uuid,
         job: (),
+    },
+    ImportState {
+        die_id: Uuid,
+        state: DieImportState,
     },
 }
 
@@ -88,6 +103,12 @@ pub async fn websocket(state: State<Arc<crate::State>>, ws: WebSocketUpgrade) ->
                                 break;
                             }
                         }
+                        RealtimeEvent::DieImportStateChange { die_id, state } => {
+                            if ws.send(Message::text(serde_json::to_string(&WsMessageSend::ImportState { die_id, state }).unwrap())).await.is_err() {
+                                break;
+                            }
+                        }
+
                     }
                 }
                 msg = ws.recv() => {
@@ -125,4 +146,12 @@ pub async fn websocket(state: State<Arc<crate::State>>, ws: WebSocketUpgrade) ->
             }
         }
     })
+}
+
+pub async fn rt_to_console(state: Arc<crate::State>) {
+    let mut rt = state.rt_sender.subscribe();
+
+    while let Ok(event) = rt.recv().await {
+        log::info!("realtime: {event:?}");
+    }
 }

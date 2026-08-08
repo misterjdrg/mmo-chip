@@ -11,12 +11,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    APIResult,
+    APIError, APIResult,
     die::db::Die,
     params::domain::{
-        CellType, Grid, Guide, GuideKind, GuideKindLineAxis, HumanAnnotation, HumanAnnotationClass,
-        HumanAnnotationShape, HumanAnnotationSource, IgnoreRect, IsParamKind, Net, Pin, ROI, Rect,
-        Shape,
+        CellRotation, CellType, Grid, Guide, GuideKind, GuideKindLineAxis, HumanAnnotation,
+        HumanAnnotationClass, HumanAnnotationShape, HumanAnnotationSource, IgnoreRect, IsParamKind,
+        Net, Pin, ROI, Rect, Shape,
     },
     tiles::TileTree,
 };
@@ -94,13 +94,29 @@ pub async fn list(
         .map(|n| n.into())
         .collect::<Vec<IgnoreRectRequest>>();
 
+    let cells = db::list::<Cell>(&state.db, die_id)
+        .await
+        .context("failed to get cells")?;
+    let cells = cells
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<CellRequest>>();
+
+    let grids = db::list::<Grid>(&state.db, die_id)
+        .await
+        .context("failed to get grids")?;
+    let grids = grids
+        .into_iter()
+        .map(|n| n.into())
+        .collect::<Vec<GridRequest>>();
+
     Ok(Json(Annotations {
         version: 2,
         revision: die.annotation_revision,
         annotations,
         cell_types,
-        cells: vec![],
-        grids: vec![],
+        cells,
+        grids,
         guides,
         ignores,
         nets,
@@ -120,26 +136,108 @@ pub async fn insert(state: State<Arc<crate::State>>, Path(die_id): Path<Uuid>) -
 pub async fn insert_node(
     state: State<Arc<crate::State>>,
     Path((die_id, net_id, node_id)): Path<(Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+    Json(node): Json<NetNode>,
+) -> APIResult<ParamChangeResponse> {
+    let mut net = db::get::<Net>(&state.db, die_id, net_id)
+        .await
+        .context("failed to get net")?
+        .context("no net")?;
+
+    net.nodes.push(node);
+
+    db::update_content(&state.db, die_id, &net)
+        .await
+        .context("failed to update node")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 pub async fn delete_node(
     state: State<Arc<crate::State>>,
     Path((die_id, net_id, node_id)): Path<(Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+) -> APIResult<ParamChangeResponse> {
+    let mut net = db::get::<Net>(&state.db, die_id, net_id)
+        .await
+        .context("failed to get net")?
+        .context("no net")?;
+
+    net.nodes.retain(|n| n.id != node_id);
+
+    db::update_content(&state.db, die_id, &net)
+        .await
+        .context("failed to update node")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 pub async fn insert_edge(
     state: State<Arc<crate::State>>,
     Path((die_id, net_id, edge_id)): Path<(Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+    Json(edge): Json<NetEdge>,
+) -> APIResult<ParamChangeResponse> {
+    let mut net = db::get::<Net>(&state.db, die_id, net_id)
+        .await
+        .context("failed to get net")?
+        .context("no net")?;
+
+    net.edges.push(edge);
+
+    db::update_content(&state.db, die_id, &net)
+        .await
+        .context("failed to update node")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 pub async fn delete_edge(
     state: State<Arc<crate::State>>,
     Path((die_id, net_id, edge_id)): Path<(Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+) -> APIResult<ParamChangeResponse> {
+    let mut net = db::get::<Net>(&state.db, die_id, net_id)
+        .await
+        .context("failed to get net")?
+        .context("no net")?;
+
+    net.edges.retain(|e| e.id != edge_id);
+
+    db::update_content(&state.db, die_id, &net)
+        .await
+        .context("failed to update node")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 pub async fn insert_shape(
     state: State<Arc<crate::State>>,
@@ -176,24 +274,20 @@ macro_rules! die_param_put {
         ) -> APIResult<ParamChangeResponse> {
             let param = Into::<$db_typ>::into((id, param));
 
-            let res = db::insert_or_update::<$db_typ>(&state.db, die_id, &param)
+            db::insert_or_update_content::<$db_typ>(&state.db, die_id, &param)
                 .await
                 .context("failed to insert or update param")?;
 
-            if res {
-                let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
-                    .await
-                    .context("failed to increment revision")?;
+            let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
+                .await
+                .context("failed to increment revision")?;
 
-                state.rt_sender.send(RealtimeEvent::AnnotationChange {
-                    die_id,
-                    new_revision,
-                });
+            state.rt_sender.send(RealtimeEvent::AnnotationChange {
+                die_id,
+                new_revision,
+            });
 
-                Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
-            } else {
-                Ok(Json(ParamChangeResponse::Err { error: format!("{} with id {} on die {} can't insert or update", <$db_typ as IsParamKind>::KIND.as_ref(), id, die_id) }))
-            }
+            Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
         }
     };
 }
@@ -207,20 +301,16 @@ macro_rules! die_param_delete {
                 .await
                 .context("failed to delete param")?;
 
-            if res {
-                let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
-                    .await
-                    .context("failed to increment revision")?;
+            let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
+                .await
+                .context("failed to increment revision")?;
 
-                state.rt_sender.send(RealtimeEvent::AnnotationChange {
-                    die_id,
-                    new_revision,
-                });
+            state.rt_sender.send(RealtimeEvent::AnnotationChange {
+                die_id,
+                new_revision,
+            });
 
-                Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
-            } else {
-                Ok(Json(ParamChangeResponse::Err { error: format!("{} with id {} on die {} not found", <$db_typ as IsParamKind>::KIND.as_ref(), id, die_id) }))
-            }
+            Ok(Json(ParamChangeResponse::Ok { ok: true, new_revision }))
         }
     };
 }
@@ -242,15 +332,35 @@ die_param!(ignore_rect, IgnoreRect);
 die_param!(guide, Guide);
 
 #[derive(Serialize, Deserialize)]
-pub struct CellRequest {}
+#[serde(rename_all = "camelCase")]
+pub struct CellRequest {
+    id: Uuid,
+    cell_type_id: Uuid,
+    x: u32,
+    y: u32,
+}
 impl From<(Uuid, CellRequest)> for Cell {
     fn from(value: (Uuid, CellRequest)) -> Self {
-        todo!()
+        Self {
+            id: value.1.id,
+            cell_type_id: value.1.cell_type_id,
+            x: value.1.x,
+            y: value.1.y,
+            flipped_vertical: false,
+            flipped_horizontal: false,
+            rotation: CellRotation::Rot0,
+            merged: false,
+        }
     }
 }
 impl From<Cell> for CellRequest {
     fn from(value: Cell) -> Self {
-        todo!()
+        Self {
+            id: value.id,
+            cell_type_id: value.cell_type_id,
+            x: value.x,
+            y: value.y,
+        }
     }
 }
 
@@ -311,7 +421,14 @@ impl From<(Uuid, NetRequest)> for Net {
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct GridRequest {}
+pub struct GridRequest {
+    id: Uuid,
+}
+impl From<Grid> for GridRequest {
+    fn from(value: Grid) -> Self {
+        todo!()
+    }
+}
 impl From<(Uuid, GridRequest)> for Grid {
     fn from(value: (Uuid, GridRequest)) -> Self {
         todo!()

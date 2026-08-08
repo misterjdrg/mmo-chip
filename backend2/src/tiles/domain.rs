@@ -26,7 +26,7 @@ pub struct TileTree {
 pub struct Levels(Vec<LevelInfo>);
 
 impl Levels {
-    fn tile_count(&self) -> u32 {
+    pub fn tile_count(&self) -> u32 {
         self.0.iter().map(|l| l.tile_count()).sum()
     }
 }
