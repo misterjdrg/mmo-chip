@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
@@ -98,6 +98,22 @@ pub enum LayerKind {
     Via,
     WireHitbox,
 }
+impl FromStr for LayerKind {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "diffusion" => Self::Diffusion,
+            "polysilicon" => Self::Polysilicon,
+            "metal1" => Self::Metal1,
+            "metal2" => Self::Metal2,
+            "contact" => Self::Contact,
+            "via1" => Self::Via,
+            "wire_hitbox" => Self::WireHitbox,
+            _ => anyhow::bail!("invalid layer: {s}"),
+        })
+    }
+}
 #[derive(Serialize, Deserialize)]
 pub struct LayerShape {
     pub id: Uuid,
@@ -150,7 +166,7 @@ pub struct CellType {
     pub id: Uuid,
     pub name: String,
     pub crop_rect: Rect,
-    pub layers: HashMap<LayerKind, LayerShape>,
+    pub layers: HashMap<LayerKind, Vec<LayerShape>>,
     pub matched: bool,
 }
 #[derive(Serialize, Deserialize)]

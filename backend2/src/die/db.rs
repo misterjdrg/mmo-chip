@@ -52,7 +52,7 @@ pub struct DieTileProgress {
     percentage: u32,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, PartialEq)]
 pub enum DieParamKind {
     Net,
     CellType,

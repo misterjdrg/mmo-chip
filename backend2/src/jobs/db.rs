@@ -45,6 +45,21 @@ pub async fn create_import_die_job(db: &DB, die_id: Uuid) -> anyhow::Result<Uuid
     .context("failed to insert job")
     .map(|_| id)
 }
+pub async fn create_clip_job(db: &DB, die_id: Uuid, owner: Uuid) -> anyhow::Result<Uuid> {
+    let id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO jobs(id, kind, status, created_at, updated_at) VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(id)
+    .bind(Json(JobKind::ClipCell { die_id, owner }))
+    .bind(Json(JobStatus::Queued))
+    .bind(Local::now())
+    .bind(Local::now())
+    .execute(db)
+    .await
+    .context("failed to insert job")
+    .map(|_| id)
+}
 
 pub async fn get(db: &DB, job_id: Uuid) -> anyhow::Result<Option<Job>> {
     sqlx::query_as("SELECT id, kind, status, created_at, updated_at, started_at, finished_at FROM jobs WHERE id = $1")

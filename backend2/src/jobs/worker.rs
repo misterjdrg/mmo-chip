@@ -1,3 +1,35 @@
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+    time::Duration,
+};
+
+use anyhow::Context;
+use futures::StreamExt;
+use image::{DynamicImage, ImageReader, codecs::jpeg::JpegEncoder};
+use tokio::{
+    sync::{broadcast, mpsc},
+    time::Instant,
+};
+use uuid::Uuid;
+
+use crate::{
+    die, file,
+    jobs::db::JobKind,
+    params::{
+        self,
+        domain::{Cell, CellType, IsParamKind, Rect},
+    },
+    realtime::{self, DieImportState, RealtimeEvent},
+    tiles::{self, TileClip, TileLocation, TileTree},
+    util::Log,
+};
+
+use super::db;
+
 pub async fn worker(state: Arc<crate::State>, mut recv: mpsc::Receiver<Uuid>) {
     while let Some(job_id) = recv.recv().await {
         let start = Instant::now();
@@ -52,14 +84,40 @@ pub async fn process_clip_cell(
         .await
         .context("failed mark job as started")?;
 
-    let clip = match true {
+    let (clip, kind) = match true {
         _ if let Some(cell) = params::db::get::<Cell>(&state.db, die_id, owner_id).await? => {
-            todo!()
+            let cell_type = params::db::get::<CellType>(&state.db, die_id, cell.cell_type_id)
+                .await?
+                .context("no type for cell")?;
+
+            (
+                Rect {
+                    x: cell.x,
+                    y: cell.y,
+                    width: cell_type.crop_rect.width,
+                    height: cell_type.crop_rect.height,
+                },
+                Cell::KIND,
+            )
         }
         _ if let Some(cell_type) =
             params::db::get::<CellType>(&state.db, die_id, owner_id).await? =>
         {
-            cell_type.crop_rect
+            let mut rect = cell_type.crop_rect;
+
+            if rect.x == 0 && rect.y == 0 && rect.width > 0 {
+                if let Some(c) = params::db::list::<Cell>(&state.db, die_id)
+                    .await?
+                    .into_iter()
+                    .filter(|c| c.cell_type_id == cell_type.id)
+                    .next()
+                {
+                    rect.x = c.x;
+                    rect.y = c.y;
+                }
+            }
+
+            (rect, CellType::KIND)
         }
         _ => anyhow::bail!("Parameter not found"),
     };
@@ -87,6 +145,30 @@ pub async fn process_clip_cell(
     .await
     .context("failed at die decode task")?
     .context("failed to load image")?;
+
+    let buf = tokio::task::spawn_blocking(move || {
+        let cropped = shot.crop_imm(clip.x, clip.y, clip.width, clip.height);
+        let mut buf = vec![];
+        let encoder = JpegEncoder::new_with_quality(&mut buf, 90);
+        cropped.write_with_encoder(encoder);
+        drop(cropped);
+        buf
+    })
+    .await
+    .context("failed to join")?;
+
+    let file_id = file::db::create(
+        &state.db,
+        die_id,
+        &format!("clip_{owner_id}.jpeg"),
+        "image/jpeg",
+        &buf,
+    )
+    .await
+    .context("failed to create clip file")?;
+    drop(buf);
+
+    tiles::db::set_clip(&state.db, die_id, owner_id, kind, file_id).await?;
 
     db::set_finished_at(&state.db, job_id)
         .await

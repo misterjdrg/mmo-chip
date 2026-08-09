@@ -12,16 +12,17 @@ use uuid::Uuid;
 
 use crate::{
     APIError, APIResult,
-    die::db::Die,
+    die::db::{Die, DieParamKind},
     params::domain::{
         CellRotation, CellType, Grid, Guide, GuideKind, GuideKindLineAxis, HumanAnnotation,
         HumanAnnotationClass, HumanAnnotationShape, HumanAnnotationSource, IgnoreRect, IsParamKind,
-        Net, Pin, ROI, Rect, Shape,
+        LayerKind, LayerShape, Net, Pin, ROI, Rect, Shape,
     },
     tiles::TileTree,
 };
 use crate::{die, params::domain::Cell};
 use crate::{
+    jobs,
     params::domain::{NetEdge, NetNode},
     realtime::RealtimeEvent,
 };
@@ -125,12 +126,12 @@ pub async fn list(
     }))
 }
 
-pub async fn insert(state: State<Arc<crate::State>>, Path(die_id): Path<Uuid>) -> APIResult<()> {
-    state.rt_sender.send(RealtimeEvent::AnnotationChange {
-        die_id,
-        new_revision: 0,
-    });
-    todo!()
+pub async fn insert(
+    state: State<Arc<crate::State>>,
+    Path(die_id): Path<Uuid>,
+    Json(rq): Json<Annotations>,
+) -> APIResult<()> {
+    unimplemented!("unused")
 }
 
 pub async fn insert_node(
@@ -241,15 +242,60 @@ pub async fn delete_edge(
 }
 pub async fn insert_shape(
     state: State<Arc<crate::State>>,
-    Path((die_id, celltype_id, layer_id, shape_id)): Path<(Uuid, Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+    Path((die_id, celltype_id, layer, shape_id)): Path<(Uuid, Uuid, String, Uuid)>,
+    Json(rq): Json<LayerShape>,
+) -> APIResult<ParamChangeResponse> {
+    let layer = layer.parse::<LayerKind>()?;
+    let mut cell_type = db::get::<CellType>(&state.db, die_id, celltype_id)
+        .await?
+        .context("no celltype")?;
+
+    cell_type.layers.entry(layer).or_default().push(rq);
+
+    db::update_content(&state.db, die_id, &cell_type)
+        .await
+        .context("failed to update shape")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 pub async fn delete_shape(
     state: State<Arc<crate::State>>,
-    Path((die_id, celltype_id, layer_id, shape_id)): Path<(Uuid, Uuid, Uuid, Uuid)>,
-) -> APIResult<()> {
-    todo!()
+    Path((die_id, celltype_id, layer, shape_id)): Path<(Uuid, Uuid, String, Uuid)>,
+) -> APIResult<ParamChangeResponse> {
+    let layer = layer.parse::<LayerKind>()?;
+    let mut cell_type = db::get::<CellType>(&state.db, die_id, celltype_id)
+        .await?
+        .context("no celltype")?;
+
+    let layer = cell_type.layers.get_mut(&layer).context("no layer")?;
+    if !layer.iter().any(|s| s.id == shape_id) {
+        return Err(APIError::General(anyhow::anyhow!("no shape")));
+    }
+    layer.retain(|s| s.id != shape_id);
+
+    db::update_content(&state.db, die_id, &cell_type)
+        .await
+        .context("failed to update shape")?;
+
+    let new_revision = die::db::increment_annotation_revision(&state.db, die_id).await?;
+    state.rt_sender.send(RealtimeEvent::AnnotationChange {
+        die_id,
+        new_revision,
+    });
+
+    Ok(Json(ParamChangeResponse::Ok {
+        ok: true,
+        new_revision,
+    }))
 }
 
 #[derive(Serialize)]
@@ -281,6 +327,19 @@ macro_rules! die_param_put {
             let new_revision = die::db::increment_annotation_revision(&state.db, die_id)
                 .await
                 .context("failed to increment revision")?;
+
+            let kind = $db_typ::KIND;
+            if kind == DieParamKind::Cell || kind == DieParamKind::CellType {
+                let job_id = jobs::db::create_clip_job(&state.db, die_id, id)
+                    .await
+                    .context("failed to create clip job")?;
+
+                state
+                    .job_sender
+                    .send(job_id)
+                    .await
+                    .context("failed to push job on the queue")?;
+            }
 
             state.rt_sender.send(RealtimeEvent::AnnotationChange {
                 die_id,
@@ -614,7 +673,7 @@ impl From<(Uuid, GuideRequest)> for Guide {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Annotations {
     version: u32,
