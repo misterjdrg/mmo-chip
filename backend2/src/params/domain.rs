@@ -24,7 +24,7 @@ macro_rules! impl_is_param_kind {
 }
 
 impl_is_param_kind!(Net);
-impl_is_param_kind!(Cell);
+impl_is_param_kind!(CellInstance);
 impl_is_param_kind!(CellType);
 impl_is_param_kind!(Grid);
 impl_is_param_kind!(Pin);
@@ -71,7 +71,7 @@ pub enum CellRotation {
     Rot270,
 }
 #[derive(Serialize, Deserialize)]
-pub struct Cell {
+pub struct CellInstance {
     pub id: Uuid,
     pub cell_type_id: Uuid,
     pub x: u32,
@@ -89,6 +89,7 @@ pub struct Rect {
     pub height: u32,
 }
 #[derive(Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
 pub enum LayerKind {
     Diffusion,
     Polysilicon,
@@ -97,6 +98,7 @@ pub enum LayerKind {
     Contact,
     Via,
     WireHitbox,
+    Unknown,
 }
 impl FromStr for LayerKind {
     type Err = anyhow::Error;
@@ -152,7 +154,7 @@ pub enum DiffusionType {
     P,
     N,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum ShapeLabel {
     Vcc,
     Gnd,

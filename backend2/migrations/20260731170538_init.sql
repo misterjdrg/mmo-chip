@@ -1,5 +1,13 @@
+CREATE TABLE users (
+    id TEXT,
+    name TEXT,
+    created_at TEXT,
+
+    PRIMARY KEY(id)
+);
 CREATE TABLE files (
     id TEXT,
+    owner_id TEXT,
     die_id TEXT,
     name TEXT,
     mime TEXT,

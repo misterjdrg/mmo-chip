@@ -38,6 +38,17 @@ pub async fn get_file(db: &DB, die_id: Uuid, loc: &TileLocation) -> anyhow::Resu
         .context("failed to get tile file")
 }
 
+pub async fn has_clip(db: &DB, die_id: Uuid, owner_id: Uuid) -> anyhow::Result<bool> {
+    Ok(
+        sqlx::query_scalar::<_, u32>("SELECT 1 FROM clips WHERE die_id = $1 AND owner_id = $2")
+            .bind(die_id)
+            .bind(owner_id)
+            .fetch_optional(db)
+            .await
+            .context("failed to has clip")?
+            .is_some(),
+    )
+}
 pub async fn set_clip(
     db: &DB,
     die_id: Uuid,

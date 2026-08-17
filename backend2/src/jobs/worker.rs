@@ -21,7 +21,7 @@ use crate::{
     jobs::db::JobKind,
     params::{
         self,
-        domain::{Cell, CellType, IsParamKind, Rect},
+        domain::{CellInstance, CellType, IsParamKind, Rect},
     },
     realtime::{self, DieImportState, RealtimeEvent},
     tiles::{self, TileClip, TileLocation, TileTree},
@@ -84,8 +84,17 @@ pub async fn process_clip_cell(
         .await
         .context("failed mark job as started")?;
 
+    if tiles::db::has_clip(&state.db, die_id, owner_id).await? {
+        db::set_finished_at(&state.db, job_id)
+            .await
+            .context("failed mark job as finished")?;
+        return Ok(());
+    }
+
     let (clip, kind) = match true {
-        _ if let Some(cell) = params::db::get::<Cell>(&state.db, die_id, owner_id).await? => {
+        _ if let Some(cell) =
+            params::db::get::<CellInstance>(&state.db, die_id, owner_id).await? =>
+        {
             let cell_type = params::db::get::<CellType>(&state.db, die_id, cell.cell_type_id)
                 .await?
                 .context("no type for cell")?;
@@ -97,7 +106,7 @@ pub async fn process_clip_cell(
                     width: cell_type.crop_rect.width,
                     height: cell_type.crop_rect.height,
                 },
-                Cell::KIND,
+                CellInstance::KIND,
             )
         }
         _ if let Some(cell_type) =
@@ -106,7 +115,7 @@ pub async fn process_clip_cell(
             let mut rect = cell_type.crop_rect;
 
             if rect.x == 0 && rect.y == 0 && rect.width > 0 {
-                if let Some(c) = params::db::list::<Cell>(&state.db, die_id)
+                if let Some(c) = params::db::list::<CellInstance>(&state.db, die_id)
                     .await?
                     .into_iter()
                     .filter(|c| c.cell_type_id == cell_type.id)

@@ -8,6 +8,7 @@ use axum::{
 };
 use image::DynamicImage;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::{
@@ -16,11 +17,11 @@ use crate::{
     params::domain::{
         CellRotation, CellType, Grid, Guide, GuideKind, GuideKindLineAxis, HumanAnnotation,
         HumanAnnotationClass, HumanAnnotationShape, HumanAnnotationSource, IgnoreRect, IsParamKind,
-        LayerKind, LayerShape, Net, Pin, ROI, Rect, Shape,
+        LayerKind, LayerShape, Net, Pin, ROI, Rect, Shape, ShapeLabel,
     },
     tiles::TileTree,
 };
-use crate::{die, params::domain::Cell};
+use crate::{die, params::domain::CellInstance};
 use crate::{
     jobs,
     params::domain::{NetEdge, NetNode},
@@ -95,13 +96,13 @@ pub async fn list(
         .map(|n| n.into())
         .collect::<Vec<IgnoreRectRequest>>();
 
-    let cells = db::list::<Cell>(&state.db, die_id)
+    let cells = db::list::<CellInstance>(&state.db, die_id)
         .await
         .context("failed to get cells")?;
     let cells = cells
         .into_iter()
         .map(|n| n.into())
-        .collect::<Vec<CellRequest>>();
+        .collect::<Vec<CellInstanceRequest>>();
 
     let grids = db::list::<Grid>(&state.db, die_id)
         .await
@@ -318,7 +319,7 @@ macro_rules! die_param_put {
             Path((die_id, id)): Path<(Uuid, Uuid)>,
             Json(param): Json<${concat($db_typ, Request)}>,
         ) -> APIResult<ParamChangeResponse> {
-            let param = Into::<$db_typ>::into((id, param));
+            let param = TryInto::<$db_typ>::try_into((id, param)).context("failed to covert params")?;
 
             db::insert_or_update_content::<$db_typ>(&state.db, die_id, &param)
                 .await
@@ -329,7 +330,7 @@ macro_rules! die_param_put {
                 .context("failed to increment revision")?;
 
             let kind = $db_typ::KIND;
-            if kind == DieParamKind::Cell || kind == DieParamKind::CellType {
+            if kind == DieParamKind::CellInstance || kind == DieParamKind::CellType {
                 let job_id = jobs::db::create_clip_job(&state.db, die_id, id)
                     .await
                     .context("failed to create clip job")?;
@@ -380,7 +381,7 @@ macro_rules! die_param {
     };
 }
 
-die_param!(cell, Cell);
+die_param!(cell, CellInstance);
 die_param!(cell_type, CellType);
 die_param!(net, Net);
 die_param!(grid, Grid);
@@ -392,14 +393,14 @@ die_param!(guide, Guide);
 
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CellRequest {
+pub struct CellInstanceRequest {
     id: Uuid,
     cell_type_id: Uuid,
     x: u32,
     y: u32,
 }
-impl From<(Uuid, CellRequest)> for Cell {
-    fn from(value: (Uuid, CellRequest)) -> Self {
+impl From<(Uuid, CellInstanceRequest)> for CellInstance {
+    fn from(value: (Uuid, CellInstanceRequest)) -> Self {
         Self {
             id: value.1.id,
             cell_type_id: value.1.cell_type_id,
@@ -412,8 +413,8 @@ impl From<(Uuid, CellRequest)> for Cell {
         }
     }
 }
-impl From<Cell> for CellRequest {
-    fn from(value: Cell) -> Self {
+impl From<CellInstance> for CellInstanceRequest {
+    fn from(value: CellInstance) -> Self {
         Self {
             id: value.id,
             cell_type_id: value.cell_type_id,
@@ -423,12 +424,67 @@ impl From<Cell> for CellRequest {
     }
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CellTypeLayerShape {
+    pub id: Uuid,
+    pub kind: String,
+    pub x: Option<u32>,
+    pub y: Option<u32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub label: Option<ShapeLabel>,
+}
+impl From<LayerShape> for CellTypeLayerShape {
+    fn from(v: LayerShape) -> Self {
+        match v.shape {
+            Shape::Rect {
+                x,
+                y,
+                width,
+                height,
+            } => Self {
+                id: v.id,
+                kind: "rect".to_string(),
+                x: Some(x),
+                y: Some(y),
+                width: Some(width),
+                height: Some(height),
+                label: v.label,
+            },
+
+            _ => todo!(),
+        }
+    }
+}
+impl TryFrom<CellTypeLayerShape> for LayerShape {
+    type Error = anyhow::Error;
+    fn try_from(value: CellTypeLayerShape) -> Result<Self, Self::Error> {
+        Ok(match value.kind.as_str() {
+            "rect" => Self {
+                id: value.id,
+                shape: Shape::Rect {
+                    x: value.x.context("no x")?,
+                    y: value.y.context("no y")?,
+                    width: value.width.context("no width")?,
+                    height: value.height.context("no height")?,
+                },
+                label: value.label,
+                forced_type: None,
+                custom_name: None,
+            },
+            k => todo!("{k}"),
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CellTypeRequest {
     id: Uuid,
     name: String,
     crop_rect: Rect,
+    layers: HashMap<LayerKind, Vec<CellTypeLayerShape>>,
 }
 impl From<CellType> for CellTypeRequest {
     fn from(value: CellType) -> Self {
@@ -436,18 +492,34 @@ impl From<CellType> for CellTypeRequest {
             id: value.id,
             name: value.name,
             crop_rect: value.crop_rect,
+            layers: value
+                .layers
+                .into_iter()
+                .map(|(k, v)| (k, v.into_iter().map(|s| s.into()).collect()))
+                .collect(),
         }
     }
 }
-impl From<(Uuid, CellTypeRequest)> for CellType {
-    fn from(value: (Uuid, CellTypeRequest)) -> Self {
-        Self {
+impl TryFrom<(Uuid, CellTypeRequest)> for CellType {
+    type Error = anyhow::Error;
+    fn try_from(value: (Uuid, CellTypeRequest)) -> Result<Self, Self::Error> {
+        Ok(Self {
             id: value.1.id,
             name: value.1.name,
             crop_rect: value.1.crop_rect,
-            layers: HashMap::new(),
+            layers: value
+                .1
+                .layers
+                .into_iter()
+                .map(|(k, v)| {
+                    v.into_iter()
+                        .map(|s| s.try_into())
+                        .try_collect()
+                        .map(|v| (k, v))
+                })
+                .try_collect()?,
             matched: false,
-        }
+        })
     }
 }
 
@@ -685,7 +757,7 @@ pub struct Annotations {
 
     nets: Vec<NetRequest>,
     cell_types: Vec<CellTypeRequest>,
-    cells: Vec<CellRequest>,
+    cells: Vec<CellInstanceRequest>,
     grids: Vec<GridRequest>,
 
     pins: Vec<PinRequest>,

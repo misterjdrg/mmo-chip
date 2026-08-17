@@ -1,5 +1,6 @@
 #![feature(macro_metavar_expr_concat)]
 #![feature(bool_to_result)]
+#![feature(iterator_try_collect)]
 #![allow(unused)]
 
 use std::{env, path::PathBuf, sync::Arc, time::Duration};

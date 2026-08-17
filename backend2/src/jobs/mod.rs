@@ -29,7 +29,7 @@ use crate::{
     jobs::db::JobKind,
     params::{
         self,
-        domain::{Cell, CellType},
+        domain::{CellInstance, CellType},
     },
     realtime::{self, DieImportState, RealtimeEvent},
     tiles::{self, TileClip, TileLocation, TileTree},

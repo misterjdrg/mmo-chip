@@ -50,9 +50,9 @@ import { decomposeLogic, layoutLogicTree } from "./logicComposition";
 // elkjs spawns a Web Worker under the hood. One per page is enough;
 // reusing it across layouts avoids worker-startup latency on every
 // re-render. The ctor is sync but the layout call is async.
-type ElkLayoutFn = (graph: unknown) => Promise<unknown>;
-type ElkLike = { layout: ElkLayoutFn };
-const elk: ElkLike = new (ELK as unknown as { new (): ElkLike })();
+//type ElkLayoutFn = (graph: unknown) => Promise<unknown>;
+//type ElkLike = { layout: ElkLayoutFn };
+//const elk: ElkLike = new (ELK as unknown as { new (): ElkLike })();
 
 // ── Public types ─────────────────────────────────────────────────
 
@@ -757,7 +757,8 @@ export async function layoutNetlist(
       }>;
     }>;
   };
-  const result = (await elk.layout(graph)) as ElkResult;
+  //const result = (await elk.layout(graph)) as ElkResult;
+  const result = {} as ElkResult;
 
   // ── 6. Translate result into our flat output shape ─────────
   const placedNodes: PlacedNode[] = [];

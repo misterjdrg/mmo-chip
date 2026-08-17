@@ -56,7 +56,7 @@ pub struct DieTileProgress {
 pub enum DieParamKind {
     Net,
     CellType,
-    Cell,
+    CellInstance,
     Grid,
     Pin,
     HumanAnnotation,
@@ -69,7 +69,7 @@ impl AsRef<str> for DieParamKind {
         match self {
             Self::Net => "net",
             Self::CellType => "cell_type",
-            Self::Cell => "cell",
+            Self::CellInstance => "cell_instance",
             Self::Grid => "grid",
             Self::Pin => "pin",
             Self::HumanAnnotation => "annotation",

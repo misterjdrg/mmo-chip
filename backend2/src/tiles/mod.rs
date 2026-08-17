@@ -11,7 +11,7 @@ use uuid::Uuid;
 
 use crate::{
     APIResult,
-    params::domain::{Cell, CellType},
+    params::domain::{CellInstance, CellType},
     util::Log,
 };
 
@@ -27,7 +27,7 @@ pub async fn cell_crop(
 
     // Waiting 10 seconds for tile, if not present
     for i in 0..40 {
-        let Ok(r) = db::get_clip_file::<Cell>(&state.db, die_id, cell_id)
+        let Ok(r) = db::get_clip_file::<CellInstance>(&state.db, die_id, cell_id)
             .await
             .context("failed to get file for cell clip")
             .log_error()
